@@ -18,15 +18,13 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_clientes.columns = df_clientes.columns.str.strip()
     df_indices.columns = df_indices.columns.str.strip()
     
-    # --- CORRECCIÓN DEL ERROR DE TEXTO VS NÚMERO ---
-    # Forzamos a que las columnas de valores sean numéricas.
+    # Forzamos a que las columnas de valores sean numéricas
     df_indices['IPC  IPIM'] = pd.to_numeric(df_indices['IPC  IPIM'].astype(str).str.replace(',', '.'), errors='coerce')
-    df_facturas['Imp. Total'] = pd.to_numeric(df_facturas['Imp. Total'].astype(str).str.replace(',', '.'), errors='coerce')
+    df_facturas['Facturacion $'] = pd.to_numeric(df_facturas['Facturacion $'].astype(str).str.replace(',', '.'), errors='coerce')
     
-    # --- MOTOR DE ACTUALIZACIÓN POR INFLACIÓN ---
-    # Nos aseguramos de que las columnas de fecha sean de tipo datetime
-    df_facturas['Fecha_dt'] = pd.to_datetime(df_facturas['Fecha'])
-    df_indices['MES_dt'] = pd.to_datetime(df_indices['MES'])
+    # Conversión de Fechas internas para procesamiento técnico
+    df_facturas['Fecha_dt'] = pd.to_datetime(df_facturas['Fecha'], errors='coerce')
+    df_indices['MES_dt'] = pd.to_datetime(df_indices['MES'], errors='coerce')
     
     # Llevamos la fecha de la factura al día 1 del mes para cruzar con la tabla de índices
     df_facturas['Mes_Indice'] = df_facturas['Fecha_dt'].dt.to_period('M').dt.to_timestamp()
@@ -45,29 +43,51 @@ def cargar_y_procesar_datos(ruta_archivo):
         how='left'
     )
     
-    # Calculamos el coeficiente de actualización y el valor real a hoy
+    # Calculamos el coeficiente de actualización y la facturación real a hoy
     df_res['Coeficiente'] = ultimo_indice / df_res['IPC  IPIM']
-    df_res['Imp. Total Actualizado'] = df_res['Imp. Total'] * df_res['Coeficiente']
+    df_res['Facturacion $ Actualizada'] = df_res['Facturacion $'] * df_res['Coeficiente']
     
-    # Cruzamos con el Maestro de Clientes usando el "Nro. Doc. Receptor"
+    # Cruzamos con el Maestro de Clientes para traer la "Denominación Receptor"
     df_final = pd.merge(df_res, df_clientes, on='Nro. Doc. Receptor', how='left')
     
-    # Eliminamos columnas auxiliares para limpiar el reporte final
-    df_final = df_final.drop(columns=['Fecha_dt', 'MES_dt', 'Mes_Indice'])
+    # --- FILTRO Y ORDEN DE COLUMNAS PARA EL HISTORIAL VISUAL ---
+    # Seleccionamos solo lo requerido, eliminando Moneda e Imp. Total
+    columnas_historial = [
+        'Fecha_dt', 'Tipo', 'Punto de Venta', 'Número Desde', 
+        'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada'
+    ]
+    df_historial_visual = df_final[[col for col in columnas_historial if col in df_final.columns]].copy()
     
-    return df_final, df_clientes, df_indices, ultimo_mes, ultimo_indice
+    # Formateamos la fecha del historial a DD/MM/YYYY
+    df_historial_visual['Fecha'] = df_historial_visual['Fecha_dt'].dt.strftime('%d/%m/%Y')
+    df_historial_visual = df_historial_visual.drop(columns=['Fecha_dt'])
+    
+    # Reordenamos para que 'Fecha' vuelva a estar al principio
+    columnas_ordenadas = ['Fecha', 'Tipo', 'Punto de Venta', 'Número Desde', 'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada']
+    df_historial_visual = df_historial_visual[columnas_ordenadas]
+    
+    # --- FORMATEO DE FECHAS EN CLIENTES E ÍNDICES (MM/YYYY) ---
+    df_clientes_visual = df_clientes.copy()
+    if 'Actualizacion' in df_clientes_visual.columns:
+        df_clientes_visual['Actualizacion'] = pd.to_datetime(df_clientes_visual['Actualizacion'], errors='coerce').dt.strftime('%m/%Y')
+        
+    df_indices_visual = df_indices.copy()
+    df_indices_visual['MES'] = df_indices_visual['MES_dt'].dt.strftime('%m/%Y')
+    df_indices_visual = df_indices_visual.drop(columns=['MES_dt'])
+    
+    return df_historial_visual, df_clientes_visual, df_indices_visual, ultimo_mes, ultimo_indice
 
 # Nombre de tu archivo de datos
 archivo_excel = "Honosrario NM.xlsx"
 
 try:
-    # Procesamos toda la información en memoria
+    # Procesamos la información con el nuevo esquema
     df_facturacion_completa, df_clientes, df_indices, ult_mes, ult_ind = cargar_y_procesar_datos(archivo_excel)
     
-    # Cartel informativo del índice base usado
+    # Cartel informativo del período base
     st.success(f"¡Datos procesados correctamente! Moneda homogénea calculada con base en el período: {ult_mes.strftime('%m/%Y')} (Índice: {ult_ind})")
     
-    # Estructura de navegación por pestañas
+    # Estructura de pestañas
     tab1, tab2, tab3, tab4 = st.tabs([
         "📈 Tablero de Control", 
         "👥 Maestro de Clientes", 
@@ -77,7 +97,7 @@ try:
     
     with tab1:
         st.subheader("Análisis Global de Facturación")
-        st.info("Espacio listo para armar los gráficos evolutivos y las alertas de revisión de abonos.")
+        st.info("Espacio listo para armar gráficos y las alertas de revisión de abonos.")
         
     with tab2:
         st.subheader("Maestro de Clientes")
@@ -91,7 +111,7 @@ try:
         st.dataframe(df_mostrar_clientes, use_container_width=True)
         
     with tab3:
-        st.subheader("Historial de Facturación con Valores a Plata de Hoy")
+        st.subheader("Historial de Facturación (Valores a Plata de Hoy)")
         st.dataframe(df_facturacion_completa, use_container_width=True)
         
     with tab4:
