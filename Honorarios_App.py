@@ -1,3 +1,10 @@
+import streamlit as st
+import pandas as pd
+
+# 1. Configuración de la página
+st.set_page_config(page_title="Control de Honorarios", layout="wide")
+st.title("📊 Panel de Control de Facturación y Honorarios")
+
 # 2. Motor de carga y cálculo de actualización
 @st.cache_data
 def cargar_y_procesar_datos(ruta_archivo):
@@ -13,7 +20,6 @@ def cargar_y_procesar_datos(ruta_archivo):
     
     # --- CORRECCIÓN DEL ERROR DE TEXTO VS NÚMERO ---
     # Forzamos a que las columnas de valores sean numéricas.
-    # Reemplazamos las comas por puntos (típico de Excel) y convertimos a número.
     df_indices['IPC  IPIM'] = pd.to_numeric(df_indices['IPC  IPIM'].astype(str).str.replace(',', '.'), errors='coerce')
     df_facturas['Imp. Total'] = pd.to_numeric(df_facturas['Imp. Total'].astype(str).str.replace(',', '.'), errors='coerce')
     
@@ -44,9 +50,4 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_res['Imp. Total Actualizado'] = df_res['Imp. Total'] * df_res['Coeficiente']
     
     # Cruzamos con el Maestro de Clientes usando el "Nro. Doc. Receptor"
-    df_final = pd.merge(df_res, df_clientes, on='Nro. Doc. Receptor', how='left')
-    
-    # Eliminamos columnas auxiliares para limpiar el reporte final
-    df_final = df_final.drop(columns=['Fecha_dt', 'MES_dt', 'Mes_Indice'])
-    
-    return df_final, df_clientes, df_indices, ultimo_mes, ultimo_indice
+    df_final = pd.merge(df_res, df_clientes, on='Nro. Doc. Receptor', how='
