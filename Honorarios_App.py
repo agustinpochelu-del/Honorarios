@@ -1,10 +1,3 @@
-import streamlit as st
-import pandas as pd
-
-# 1. Configuración de la página
-st.set_page_config(page_title="Control de Honorarios", layout="wide")
-st.title("📊 Panel de Control de Facturación y Honorarios")
-
 # 2. Motor de carga y cálculo de actualización
 @st.cache_data
 def cargar_y_procesar_datos(ruta_archivo):
@@ -17,6 +10,12 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_facturas.columns = df_facturas.columns.str.strip()
     df_clientes.columns = df_clientes.columns.str.strip()
     df_indices.columns = df_indices.columns.str.strip()
+    
+    # --- CORRECCIÓN DEL ERROR DE TEXTO VS NÚMERO ---
+    # Forzamos a que las columnas de valores sean numéricas.
+    # Reemplazamos las comas por puntos (típico de Excel) y convertimos a número.
+    df_indices['IPC  IPIM'] = pd.to_numeric(df_indices['IPC  IPIM'].astype(str).str.replace(',', '.'), errors='coerce')
+    df_facturas['Imp. Total'] = pd.to_numeric(df_facturas['Imp. Total'].astype(str).str.replace(',', '.'), errors='coerce')
     
     # --- MOTOR DE ACTUALIZACIÓN POR INFLACIÓN ---
     # Nos aseguramos de que las columnas de fecha sean de tipo datetime
@@ -51,50 +50,3 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_final = df_final.drop(columns=['Fecha_dt', 'MES_dt', 'Mes_Indice'])
     
     return df_final, df_clientes, df_indices, ultimo_mes, ultimo_indice
-
-# Nombre de tu archivo de datos
-archivo_excel = "Honosrario NM.xlsx"
-
-try:
-    # Procesamos toda la información en memoria
-    df_facturacion_completa, df_clientes, df_indices, ult_mes, ult_ind = cargar_y_procesar_datos(archivo_excel)
-    
-    # Cartel informativo del índice base usado
-    st.success(f"¡Datos procesados correctamente! Moneda homogénea calculada con base en el período: {ult_mes.strftime('%m/%Y')} (Índice: {ult_ind})")
-    
-    # Estructura de navegación por pestañas
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📈 Tablero de Control", 
-        "👥 Maestro de Clientes", 
-        "🧾 Facturas Procesadas", 
-        "📊 Índices Históricos"
-    ])
-    
-    with tab1:
-        st.subheader("Análisis Global de Facturación")
-        st.info("Espacio listo para armar los gráficos evolutivos y las alertas de revisión de abonos.")
-        
-    with tab2:
-        st.subheader("Maestro de Clientes")
-        ver_solo_activos = st.checkbox("Mostrar solo clientes Activos", value=True)
-        
-        if ver_solo_activos:
-            df_mostrar_clientes = df_clientes[df_clientes['Estado'] == 'Activo']
-        else:
-            df_mostrar_clientes = df_clientes
-            
-        st.dataframe(df_mostrar_clientes, use_container_width=True)
-        
-    with tab3:
-        st.subheader("Historial de Facturación con Valores a Plata de Hoy")
-        # Reordenamos visualmente para ver el importe original y el actualizado al final
-        st.dataframe(df_facturacion_completa, use_container_width=True)
-        
-    with tab4:
-        st.subheader("Índices de Referencia (IPC / IPIM)")
-        st.dataframe(df_indices, use_container_width=True)
-
-except FileNotFoundError:
-    st.error(f"No se encontró el archivo '{archivo_excel}'. Verificá que esté guardado en el mismo directorio que Honorarios_App.py.")
-except Exception as e:
-    st.error(f"Ocurrió un error al procesar los datos: {e}")
