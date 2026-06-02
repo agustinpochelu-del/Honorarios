@@ -50,4 +50,55 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_res['Imp. Total Actualizado'] = df_res['Imp. Total'] * df_res['Coeficiente']
     
     # Cruzamos con el Maestro de Clientes usando el "Nro. Doc. Receptor"
-    df_final = pd.merge(df_res, df_clientes, on='Nro. Doc. Receptor', how='
+    df_final = pd.merge(df_res, df_clientes, on='Nro. Doc. Receptor', how='left')
+    
+    # Eliminamos columnas auxiliares para limpiar el reporte final
+    df_final = df_final.drop(columns=['Fecha_dt', 'MES_dt', 'Mes_Indice'])
+    
+    return df_final, df_clientes, df_indices, ultimo_mes, ultimo_indice
+
+# Nombre de tu archivo de datos
+archivo_excel = "Honosrario NM.xlsx"
+
+try:
+    # Procesamos toda la información en memoria
+    df_facturacion_completa, df_clientes, df_indices, ult_mes, ult_ind = cargar_y_procesar_datos(archivo_excel)
+    
+    # Cartel informativo del índice base usado
+    st.success(f"¡Datos procesados correctamente! Moneda homogénea calculada con base en el período: {ult_mes.strftime('%m/%Y')} (Índice: {ult_ind})")
+    
+    # Estructura de navegación por pestañas
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📈 Tablero de Control", 
+        "👥 Maestro de Clientes", 
+        "🧾 Facturas Procesadas", 
+        "📊 Índices Históricos"
+    ])
+    
+    with tab1:
+        st.subheader("Análisis Global de Facturación")
+        st.info("Espacio listo para armar los gráficos evolutivos y las alertas de revisión de abonos.")
+        
+    with tab2:
+        st.subheader("Maestro de Clientes")
+        ver_solo_activos = st.checkbox("Mostrar solo clientes Activos", value=True)
+        
+        if ver_solo_activos:
+            df_mostrar_clientes = df_clientes[df_clientes['Estado'] == 'Activo']
+        else:
+            df_mostrar_clientes = df_clientes
+            
+        st.dataframe(df_mostrar_clientes, use_container_width=True)
+        
+    with tab3:
+        st.subheader("Historial de Facturación con Valores a Plata de Hoy")
+        st.dataframe(df_facturacion_completa, use_container_width=True)
+        
+    with tab4:
+        st.subheader("Índices de Referencia (IPC / IPIM)")
+        st.dataframe(df_indices, use_container_width=True)
+
+except FileNotFoundError:
+    st.error(f"No se encontró el archivo '{archivo_excel}'. Verificá que esté guardado en el mismo directorio.")
+except Exception as e:
+    st.error(f"Ocurrió un error al procesar los datos: {e}")
