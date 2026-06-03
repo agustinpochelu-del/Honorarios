@@ -10,7 +10,7 @@ st.title("📊 Panel de Control de Facturación y Honorarios")
 # 2. CONFIGURACIÓN DEL ORIGEN DE DATOS (ONEDRIVE)
 USAR_NUBE = True
 
-# Tu link de OneDrive modificado para descarga directa (termina en ?download=1)
+# Tu link de OneDrive modificado para descarga directa
 URL_NUBE = "https://1drv.ms/x/c/d157fed8b9ecc198/IQBjbEIKjpuyQ5t6EsSIuXVmAXAon-EyPNaN4Ae0qbskn2E?download=1"
 
 # 3. Motor de carga y cálculo de actualización
@@ -19,9 +19,8 @@ def cargar_y_procesar_datos(origen, es_nube):
     # Si viene de la nube, descargamos el archivo en memoria antes de pasárselo a Pandas
     if es_nube:
         try:
-            # Hacemos la petición a OneDrive
             respuesta = requests.get(origen)
-            respuesta.raise_for_status() # Verifica que no haya error de conexión
+            respuesta.raise_for_status() 
             archivo_final = BytesIO(respuesta.content)
         except Exception as e:
             raise Exception(f"Error al descargar desde OneDrive: {e}")
@@ -41,6 +40,8 @@ def cargar_y_procesar_datos(origen, es_nube):
     # Forzamos a que las columnas de valores sean numéricas
     df_indices['IPC  IPIM'] = pd.to_numeric(df_indices['IPC  IPIM'].astype(str).str.replace(',', '.'), errors='coerce')
     df_facturas['Facturacion $'] = pd.to_numeric(df_facturas['Facturacion $'].astype(str).str.replace(',', '.'), errors='coerce')
+    if 'precio' in df_clientes.columns:
+        df_clientes['precio'] = pd.to_numeric(df_clientes['precio'].astype(str).str.replace(',', '.'), errors='coerce')
     
     # Conversión de Fechas internas
     df_facturas['Fecha_dt'] = pd.to_datetime(df_facturas['Fecha'], errors='coerce')
@@ -132,14 +133,30 @@ try:
         else:
             df_mostrar_clientes = df_clientes
             
-        st.dataframe(df_mostrar_clientes, use_container_width=True)
+        # Mostramos la tabla formateando la columna 'precio' como moneda con 2 decimales
+        st.dataframe(
+            df_mostrar_clientes, 
+            use_container_width=True,
+            column_config={
+                "precio": st.column_config.NumberColumn("Precio Unitario", format="$ %.2f")
+            }
+        )
         
     with tab3:
         st.subheader("Historial de Facturación (Valores a Plata de Hoy)")
-        st.dataframe(df_facturacion_completa, use_container_width=True)
+        # Mostramos el historial formateando ambas columnas de dinero
+        st.dataframe(
+            df_facturacion_completa, 
+            use_container_width=True,
+            column_config={
+                "Facturacion $": st.column_config.NumberColumn("Facturación Original", format="$ %.2f"),
+                "Facturacion $ Actualizada": st.column_config.NumberColumn("Facturación Actualizada", format="$ %.2f")
+            }
+        )
         
     with tab4:
         st.subheader("Índices de Referencia (IPC / IPIM)")
+        # Dejamos los índices tal cual para no perder la precisión de la tasa de inflación
         st.dataframe(df_indices, use_container_width=True)
 
 except Exception as e:
