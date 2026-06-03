@@ -14,9 +14,9 @@ ARCHIVO_LOCAL = "Honosrario NM.xlsx"
 
 # --- INICIALIZACIÓN DE MEMORIA INTERNA (CATEGORÍAS POR DEFECTO) ---
 if 'cat_agustin' not in st.session_state:
-    st.session_state['cat_agustin'] = 'D'  # Categoría inicial por defecto
+    st.session_state['cat_agustin'] = 'D'
 if 'cat_laura' not in st.session_state:
-    st.session_state['cat_laura'] = 'B'    # Categoría inicial por defecto
+    st.session_state['cat_laura'] = 'B'
 
 # --- CONFIGURACIÓN DE ESCALAS DE MONOTRIBUTO ---
 ESCALAS_MONOTRIBUTO = {
@@ -25,7 +25,6 @@ ESCALAS_MONOTRIBUTO = {
     'I': 49115000, 'J': 56400000, 'K': 68000000
 }
 
-# Función auxiliar para abreviar números grandes
 def formato_abreviado(valor):
     if valor >= 1_000_000:
         return f"$ {valor / 1_000_000:.2f} M"
@@ -34,7 +33,7 @@ def formato_abreviado(valor):
     else:
         return f"$ {valor:.2f}"
 
-# 2. Motor de carga y cálculo de actualización
+# 2. Motor de carga y cálculo
 def cargar_y_procesar_datos(ruta_archivo):
     if not os.path.exists(ruta_archivo):
         return None, None, None, None, None, None, None, None, None
@@ -70,7 +69,6 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_res['Facturacion $ Actualizada'] = df_res['Facturacion $'] * df_res['Coeficiente']
     
     df_final = pd.merge(df_res, df_clientes, on='Nro. Doc. Receptor', how='left')
-    
     df_historial_visual = df_final[['Fecha_dt', 'Mes_Indice', 'Tipo', 'Punto de Venta', 'Número Desde', 'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada']].copy()
     
     df_clientes_proc = df_clientes.copy()
@@ -97,7 +95,6 @@ def cargar_y_procesar_datos(ruta_archivo):
     
     df_clientes_proc[['Meses Desactualizado', 'Alerta_Revisión', 'Honorario Sugerido']] = df_clientes_proc.apply(calcular_metricas_comerciales, axis=1)
     df_clientes_proc['Meses Desactualizado'] = df_clientes_proc['Meses Desactualizado'].astype(int)
-    
     df_clientes_proc['Orden_Estado'] = df_clientes_proc['Estado'].apply(lambda x: 0 if x == 'Activo' else 1)
     df_clientes_proc = df_clientes_proc.sort_values(by=['Orden_Estado', 'precio'], ascending=[True, False]).drop(columns=['Orden_Estado'])
     df_clientes_proc['Actualizacion_Str'] = df_clientes_proc['Actualizacion_dt'].dt.strftime('%m/%Y')
@@ -120,9 +117,10 @@ def colorear_clientes(row):
 # --- BLOQUE PRINCIPAL DE EJECUCIÓN ---
 df_historial_base, df_clientes, df_indices_vis, ult_mes, ult_ind, df_clientes_orig, df_facturas_orig, df_indices_orig, df_motor_interno = cargar_y_procesar_datos(ARCHIVO_LOCAL)
 
+# --- MENÚ LATERAL (BARRA LATERAL DE CONTROL Y ALERTAS) ---
 with st.sidebar:
-    st.header("📁 Control del Sistema")
-    archivo_subido = st.file_uploader("Actualizar Excel maestro", type=["xlsx"])
+    st.header("📁 Base de Datos")
+    archivo_subido = st.file_uploader("Actualizar Excel maestro", type=["xlsx"], label_visibility="collapsed")
     if archivo_subido is not None:
         with open(ARCHIVO_LOCAL, "wb") as f:
             f.write(archivo_subido.getbuffer())
@@ -132,30 +130,65 @@ with st.sidebar:
         
     st.divider()
     
+    # --- 1. ALERTAS INTELIGENTES (ESTILO KPI) ---
+    st.header("🔔 Alertas y Estado")
+    
+    # Alerta Honorarios
     if df_clientes is not None:
         clientes_vencidos = df_clientes[df_clientes['Alerta_Revisión'] == 'VENCIDO']
         if not clientes_vencidos.empty:
-            st.error(f"⚠️ {len(clientes_vencidos)} Honorarios a Renovar")
-            with st.popover("Ver detalles de clientes"):
-                for _, row in clientes_vencidos.iterrows():
-                    st.write(f"- 🔴 {row['Denominación Receptor']} *(Hace {row['Meses Desactualizado']} m)*")
+            lista_clientes_txt = "\n".join([f"• {row['Denominación Receptor']} ({row['Meses Desactualizado']} meses)" for _, row in clientes_vencidos.iterrows()])
+            help_text_hono = f"Clientes con abonos desactualizados:\n{lista_clientes_txt}\n\n👉 Entrá a la pestaña '🛠️ Simulador y Ajustes' para aplicar los incrementos."
+            st.metric(label="Honorarios a Renovar", value=f"⚠️ {len(clientes_vencidos)}", help=help_text_hono)
         else:
-            st.success("✅ Honorarios al día.")
+            st.metric(label="Honorarios a Renovar", value="✅ 0", help="Todos los clientes activos están dentro del período vigente de actualización.")
+
+    # Alerta Predictiva Monotributo
+    if df_historial_base is not None:
+        fecha_max = df_motor_interno['Fecha_dt'].max()
+        fecha_12m = fecha_max - pd.DateOffset(years=1)
+        fecha_3m = fecha_max - pd.DateOffset(months=3) # Últimos 3 meses para calcular tendencia
+
+        fact_12m_nominal = df_motor_interno[(df_motor_interno['Fecha_dt'] > fecha_12m) & (df_motor_interno['Fecha_dt'] <= fecha_max)]['Facturacion $'].sum()
+        fact_3m_nominal = df_motor_interno[(df_motor_interno['Fecha_dt'] > fecha_3m) & (df_motor_interno['Fecha_dt'] <= fecha_max)]['Facturacion $'].sum()
+        
+        # Velocidad de facturación promedio reciente
+        promedio_mensual_reciente = fact_3m_nominal / 3 if fact_3m_nominal > 0 else fact_12m_nominal / 12
+
+        def evaluar_semaforo_afip(cat_actual):
+            limite = ESCALAS_MONOTRIBUTO[cat_actual]
+            margen_restante = limite - fact_12m_nominal
             
+            if margen_restante < 0:
+                return "🔴 Pasado", f"Ya superaste el límite nominal de la Categoría {cat_actual} por $ {abs(margen_restante):,.2f}."
+            elif margen_restante <= promedio_mensual_reciente:
+                return "🟡 Alerta", f"⚠️ Margen: $ {margen_restante:,.2f}.\nSi el mes que viene facturás tu promedio habitual de $ {promedio_mensual_reciente:,.2f}, te pasarías de la Categoría {cat_actual}."
+            else:
+                return "🟢 Bien", f"✅ Margen seguro: $ {margen_restante:,.2f}.\nUn mes habitual ($ {promedio_mensual_reciente:,.2f}) te mantiene dentro de la Categoría {cat_actual}."
+
+        estado_ag, help_ag = evaluar_semaforo_afip(st.session_state['cat_agustin'])
+        estado_la, help_la = evaluar_semaforo_afip(st.session_state['cat_laura'])
+
+        col_a, col_b = st.columns(2)
+        col_a.metric(label=f"AFIP Agus ({st.session_state['cat_agustin']})", value=estado_ag, help=help_ag)
+        col_b.metric(label=f"AFIP Lau ({st.session_state['cat_laura']})", value=estado_la, help=help_la)
+        st.caption("*(Evaluación sobre total unificado hasta la separación de CUITs en el Excel)*")
+
     st.divider()
 
+    # --- 2. FILTRO TEMPORAL ---
     if df_historial_base is not None:
         st.header("⏳ Filtro Temporal")
         meses_disponibles = sorted(df_historial_base['Mes_Indice'].dropna().unique())
         if meses_disponibles:
             opciones_fechas = [m.strftime('%m/%Y') for m in meses_disponibles]
-            rango_seleccionado = st.select_slider("Rango de análisis:", options=opciones_fechas, value=(opciones_fechas[0], opciones_fechas[-1]))
+            rango_seleccionado = st.select_slider("Rango de análisis:", options=opciones_fechas, value=(opciones_fechas[0], opciones_fechas[-1]), label_visibility="collapsed")
             fecha_inicio_filtro = pd.to_datetime(rango_seleccionado[0], format='%m/%Y')
             fecha_fin_filtro = pd.to_datetime(rango_seleccionado[1], format='%m/%Y')
         else:
             fecha_inicio_filtro, fecha_fin_filtro = None, None
 
-# --- RENDERIZADO ---
+# --- RENDERIZADO DEL CUERPO PRINCIPAL ---
 if df_historial_base is not None:
     if fecha_inicio_filtro and fecha_fin_filtro:
         df_motor_filtrado = df_motor_interno[(df_motor_interno['Mes_Indice'] >= fecha_inicio_filtro) & (df_motor_interno['Mes_Indice'] <= fecha_fin_filtro)].copy()
@@ -187,14 +220,14 @@ if df_historial_base is not None:
         df_motor_filtrado['Año-Mes'] = df_motor_filtrado['Mes_Indice'].dt.strftime('%Y-%m')
         df_evolucion_mensual = df_motor_filtrado.groupby('Año-Mes')[['Facturacion $', 'Facturacion $ Actualizada']].sum().reset_index()
         df_evolucion_mensual.rename(columns={'Facturacion $': 'Nominal Histórica', 'Facturacion $ Actualizada': 'Real Indexada'}, inplace=True)
-        fig_linea = px.line(df_evolucion_mensual, x='Año-Mes', y=['Nominal Histórica', 'Real Indexada'])
+        fig_linea = px.line(df_evolucion_mensual, x='Año-Mes', y=['Nominal Histórica', 'Real Indexada'], color_discrete_sequence=['#636EFA', '#00CC96'])
         fig_linea.update_layout(yaxis_tickformat="$.2s", hovermode="x unified")
         fig_linea.update_traces(hovertemplate="%{y:$,.2f}")
         st.plotly_chart(fig_linea, use_container_width=True)
         
         st.divider()
         df_ranking_clientes = df_motor_filtrado.groupby('Denominación Receptor')['Facturacion $ Actualizada'].sum().reset_index().sort_values(by='Facturacion $ Actualizada', ascending=True)
-        fig_barras = px.bar(df_ranking_clientes, x='Facturacion $ Actualizada', y='Denominación Receptor', orientation='h')
+        fig_barras = px.bar(df_ranking_clientes, x='Facturacion $ Actualizada', y='Denominación Receptor', orientation='h', color_discrete_sequence=['#AB63FA'])
         fig_barras.update_layout(xaxis_tickformat="$.2s", height=600)
         fig_barras.update_traces(hovertemplate="%{x:$,.2f}")
         st.plotly_chart(fig_barras, use_container_width=True)
@@ -252,23 +285,19 @@ if df_historial_base is not None:
         st.dataframe(df_indices_vis, use_container_width=True)
         
     with tab6:
-        # --- 🏛️ EXCLUSIVO CONTROL MONOTRIBUTO INTERACTIVO V8 ---
         st.subheader("🏛️ Panel de Recategorización e Inscripción Activa")
         
-        # 1. Alerta de Calendario AFIP Automática
         mes_actual = datetime.now().month
         if mes_actual in [6, 12]:
-            st.warning("⚠️ **Recordatorio de Agenda:** El mes que viene inicia el período de recategorización obligatoria de AFIP (Enero / Julio). Revisá estos indicadores proactivamente.")
+            st.warning("⚠️ **Recordatorio de Agenda:** El mes que viene inicia el período de recategorización obligatoria de AFIP.")
         elif mes_actual in [1, 7]:
             st.error("🚨 **Período de Recategorización Activo:** Tenés tiempo hasta el día 20 de este mes para confirmar o modificar tu categoría en la web de AFIP.")
             
-        # Simulación temporal de la facturación consolidada total para control de topes
         fecha_max_factura = df_motor_interno['Fecha_dt'].max()
         fecha_hace_un_año = fecha_max_factura - pd.DateOffset(years=1)
         df_ultimos_12 = df_motor_interno[(df_motor_interno['Fecha_dt'] > fecha_hace_un_año) & (df_motor_interno['Fecha_dt'] <= fecha_max_factura)]
         facturacion_nominal_total = df_ultimos_12['Facturacion $'].sum()
         
-        # Como explicaste que vas a separar los datos en el Excel más adelante, calculamos el total sugerido
         def calcular_letra_sugerida(monto):
             for cat, limite in ESCALAS_MONOTRIBUTO.items():
                 if monto <= limite: return cat
@@ -276,7 +305,6 @@ if df_historial_base is not None:
             
         cat_sugerida_total = calcular_letra_sugerida(facturacion_nominal_total)
         
-        # Divisiones visuales limpias
         col_izq, col_der = st.columns(2)
         
         with col_izq:
@@ -285,39 +313,25 @@ if df_historial_base is not None:
             st.write(f"👩 **Laura:** Categoría seleccionada actualmente: **{st.session_state['cat_laura']}**")
             
             st.divider()
-            st.write("### 🧮 Control de Facturación Acumulada (Últimos 12 meses móviles)")
-            st.metric("Facturación Bruta Nominal Total", f"$ {facturacion_nominal_total:,.2f}")
-            st.info(f"💡 *Nota de simulación:* Si esta facturación perteneciera a un solo CUIT, le correspondería la **Categoría {cat_sugerida_total}**.")
+            st.write("### 🧮 Control de Facturación Acumulada")
+            st.metric("Facturación Bruta Nominal (12 Meses)", f"$ {facturacion_nominal_total:,.2f}")
+            st.info(f"💡 *Nota de simulación:* Al CUIT unificado le correspondería la **Categoría {cat_sugerida_total}**.")
             st.caption(f"Período móvil analizado: {fecha_hace_un_año.strftime('%d/%m/%Y')} al {fecha_max_factura.strftime('%d/%m/%Y')}")
             
         with col_der:
-            # --- ASISTENTE DE ACTUALIZACIÓN VISUAL (WIZARD) ---
             st.write("### 🛠️ Asistente de Actualización de Categoría")
-            st.write("Cuando se cumpla el vencimiento mensual o semestral de AFIP y hagas el trámite legal, confirmalo acá para mantener la app sincronizada:")
+            st.write("Cuando hagas el trámite legal, confirmalo acá para mantener la app sincronizada:")
             
             hizo_tramite = st.checkbox("¿Ya realizaste la actualización/confirmación en la web de AFIP?")
-            
             if hizo_tramite:
-                st.write("**Ingresá las nuevas categorías vigentes según la constancia de AFIP:**")
+                nueva_cat_agustin = st.selectbox("Nueva Categoría Agustín:", options=list(ESCALAS_MONOTRIBUTO.keys()), index=list(ESCALAS_MONOTRIBUTO.keys()).index(st.session_state['cat_agustin']))
+                nueva_cat_laura = st.selectbox("Nueva Categoría Laura:", options=list(ESCALAS_MONOTRIBUTO.keys()), index=list(ESCALAS_MONOTRIBUTO.keys()).index(st.session_state['cat_laura']))
                 
-                nueva_cat_agustin = st.selectbox(
-                    "Nueva Categoría para Agustín:", 
-                    options=list(ESCALAS_MONOTRIBUTO.keys()), 
-                    index=list(ESCALAS_MONOTRIBUTO.keys()).index(st.session_state['cat_agustin'])
-                )
-                nueva_cat_laura = st.selectbox(
-                    "Nueva Categoría para Laura:", 
-                    options=list(ESCALAS_MONOTRIBUTO.keys()), 
-                    index=list(ESCALAS_MONOTRIBUTO.keys()).index(st.session_state['cat_laura'])
-                )
-                
-                if st.button("✅ Confirmar y Aplicar Categorías en la App"):
+                if st.button("✅ Confirmar y Aplicar"):
                     st.session_state['cat_agustin'] = nueva_cat_agustin
                     st.session_state['cat_laura'] = nueva_cat_laura
-                    st.success(f"¡Sincronizado! Se guardó la Categoría {nueva_cat_agustin} para Agustín y {nueva_cat_laura} para Laura. Los nuevos topes están activos.")
+                    st.success("¡Sincronizado! Los nuevos topes están activos.")
                     st.rerun()
-            else:
-                st.caption("ℹ️ *Al tildar el casillero de arriba, se abrirá el selector interactivo para modificar tus letras declaradas sin necesidad de tocar el archivo Excel.*")
-                
+
 else:
     st.warning("⚠️ Todavía no hay ninguna base de datos activa. Usa el menú lateral para subir tu archivo 'Honosrario NM.xlsx'.")
