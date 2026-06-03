@@ -212,7 +212,7 @@ if df_historial_base is not None:
             st.divider()
             
             # --- GRÁFICO 1: EVOLUCIÓN HISTÓRICA FILTRADA ---
-            st.write("### 📉 Evolución Mensual de Facturación: Nominal vs. Plata de Hoy")
+            st.write("### 📉 Evolución Mensual de Facturación: Nominal vs. Homogenea")
             
             df_motor_filtrado['Año-Mes'] = df_motor_filtrado['Mes_Indice'].dt.strftime('%Y-%m')
             df_evolucion_mensual = df_motor_filtrado.groupby('Año-Mes')[['Facturacion $', 'Facturacion $ Actualizada']].sum().reset_index()
