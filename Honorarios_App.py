@@ -66,11 +66,7 @@ def cargar_y_procesar_datos(ruta_archivo):
     # Cruce final con clientes
     df_final = pd.merge(df_res, df_clientes, on='Nro. Doc. Receptor', how='left')
     
-    df_historial_visual = df_final[['Fecha_dt', 'Tipo', 'Punto de Venta', 'Número Desde', 'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada']].copy()
-    df_historial_visual['Fecha'] = df_historial_visual['Fecha_dt'].dt.strftime('%d/%m/%Y')
-    df_historial_visual = df_historial_visual.drop(columns=['Fecha_dt'])
-    columnas_ordenadas = ['Fecha', 'Tipo', 'Punto de Venta', 'Número Desde', 'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada']
-    df_historial_visual = df_historial_visual[columnas_ordenadas]
+    df_historial_visual = df_final[['Fecha_dt', 'Mes_Indice', 'Tipo', 'Punto de Venta', 'Número Desde', 'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada']].copy()
     
     # Clientes proc
     df_clientes_proc = df_clientes.copy()
@@ -118,20 +114,69 @@ def colorear_clientes(row):
     return estilos
 
 # --- BLOQUE PRINCIPAL DE EJECUCIÓN ---
-df_historial, df_clientes, df_indices_vis, ult_mes, ult_ind, df_clientes_orig, df_facturas_orig, df_indices_orig, df_motor_interno = cargar_y_procesar_datos(ARCHIVO_LOCAL)
+df_historial_base, df_clientes, df_indices_vis, ult_mes, ult_ind, df_clientes_orig, df_facturas_orig, df_indices_orig, df_motor_interno = cargar_y_procesar_datos(ARCHIVO_LOCAL)
 
+# --- MENÚ LATERAL (BARRA LATERAL DE CONTROL) ---
 with st.sidebar:
-    st.header("📁 Control del Archivo Maestro")
-    archivo_subido = st.file_uploader("Subir o actualizar Excel maestro (Honosrario NM.xlsx)", type=["xlsx"])
+    st.header("📁 Control del Sistema")
+    
+    # Subida de archivo maestro
+    archivo_subido = st.file_uploader("Actualizar Excel maestro", type=["xlsx"])
     if archivo_subido is not None:
         with open(ARCHIVO_LOCAL, "wb") as f:
             f.write(archivo_subido.getbuffer())
-        st.success("¡Archivo maestro cargado/actualizado!")
+        st.success("¡Archivo maestro actualizado!")
         st.cache_data.clear()
         st.rerun()
+        
+    st.divider()
+    
+    # --- LA NUEVA BARRA DE FILTRO TEMPORAL ---
+    if df_historial_base is not None:
+        st.header("⏳ Filtro Temporal")
+        
+        # Obtenemos la lista ordenada de meses disponibles reales en tus facturas
+        meses_disponibles = sorted(df_historial_base['Mes_Indice'].unique())
+        
+        if meses_disponibles:
+            # Creamos una lista de strings legibles para que use el slider interactivo
+            opciones_fechas = [m.strftime('%m/%Y') for m in meses_disponibles]
+            
+            # El slider permite seleccionar un rango (Mes de Inicio y Mes de Fin)
+            rango_seleccionado = st.select_slider(
+                "Seleccioná el rango de análisis:",
+                options=opciones_fechas,
+                value=(opciones_fechas[0], opciones_fechas[-1]) # Por defecto abarca todo el histórico
+            )
+            
+            # Convertimos las strings seleccionadas de vuelta a formato Timestamp para poder filtrar el DataFrame
+            fecha_inicio_filtro = pd.to_datetime(rango_seleccionado[0], format='%m/%Y')
+            fecha_fin_filtro = pd.to_datetime(rango_seleccionado[1], format='%m/%Y')
+            
+            st.info(f"Mostrando datos desde **{rango_seleccionado[0]}** hasta **{rango_seleccionado[1]}**")
+        else:
+            fecha_inicio_filtro, fecha_fin_filtro = None, None
+    else:
+        fecha_inicio_filtro, fecha_fin_filtro = None, None
 
-if df_historial is not None:
-    st.success(f"¡Base de datos activa! Moneda homogénea base: {ult_mes.strftime('%m/%Y')} (Índice: {ult_ind})")
+# --- RENDERIZADO CON FILTRADO APLICADO ---
+if df_historial_base is not None:
+    # APLICAMOS EL FILTRO TEMPORAL DIRECTO EN MEMORIA ANTES DE GRÁFICOS Y TABLAS
+    if fecha_inicio_filtro and fecha_fin_filtro:
+        df_motor_filtrado = df_motor_interno[
+            (df_motor_interno['Mes_Indice'] >= fecha_inicio_filtro) & 
+            (df_motor_interno['Mes_Indice'] <= fecha_fin_filtro)
+        ].copy()
+        
+        df_historial_filtrado = df_historial_base[
+            (df_historial_base['Mes_Indice'] >= fecha_inicio_filtro) & 
+            (df_historial_base['Mes_Indice'] <= fecha_fin_filtro)
+        ].copy()
+    else:
+        df_motor_filtrado = df_motor_interno.copy()
+        df_historial_filtrado = df_historial_base.copy()
+
+    st.success(f"¡Base de datos activa! Moneda homogénea con base en el período: {ult_mes.strftime('%m/%Y')} (Índice: {ult_ind})")
     
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📈 Estadísticas y Gráficos",
@@ -144,74 +189,68 @@ if df_historial is not None:
     with tab1:
         st.subheader("📊 Análisis Evolutivo Contable por Cliente y Período")
         
-        # --- CÁLCULO DE KPIs ---
-        # Totales históricos
-        total_nominal = df_motor_interno['Facturacion $'].sum()
-        total_actualizado = df_motor_interno['Facturacion $ Actualizada'].sum()
-        
-        # Último mes y últimos 12 meses
-        mes_maximo = df_motor_interno['Mes_Indice'].max()
-        mes_hace_12 = mes_maximo - pd.DateOffset(months=11) # Últimos 12 meses incluyendo el actual
-        
-        fact_ult_mes = df_motor_interno[df_motor_interno['Mes_Indice'] == mes_maximo]['Facturacion $ Actualizada'].sum()
-        fact_ult_12m = df_motor_interno[df_motor_interno['Mes_Indice'] >= mes_hace_12]['Facturacion $ Actualizada'].sum()
-        
-        # Renderizado de Tarjetas KPI super limpias
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Histórico Nominal", formato_abreviado(total_nominal))
-        col2.metric("Total Histórico Real", formato_abreviado(total_actualizado))
-        col3.metric("Últimos 12 Meses (Real)", formato_abreviado(fact_ult_12m))
-        col4.metric(f"Último Mes ({mes_maximo.strftime('%m/%Y')})", formato_abreviado(fact_ult_mes))
-        
-        st.divider()
-        
-        # --- GRÁFICO 1: EVOLUCIÓN HISTÓRICA CON PLOTLY ---
-        st.write("### 📉 Evolución Mensual de Facturación: Nominal vs. Plata de Hoy")
-        
-        df_motor_interno['Año-Mes'] = df_motor_interno['Mes_Indice'].dt.strftime('%Y-%m')
-        df_evolucion_mensual = df_motor_interno.groupby('Año-Mes')[['Facturacion $', 'Facturacion $ Actualizada']].sum().reset_index()
-        df_evolucion_mensual.rename(columns={
-            'Facturacion $': 'Nominal Histórica', 
-            'Facturacion $ Actualizada': 'Real Indexada'
-        }, inplace=True)
-        
-        fig_linea = px.line(
-            df_evolucion_mensual, 
-            x='Año-Mes', 
-            y=['Nominal Histórica', 'Real Indexada'],
-            labels={'value': 'Importe', 'variable': 'Tipo de Facturación', 'Año-Mes': 'Mes'},
-            color_discrete_sequence=['#636EFA', '#00CC96']
-        )
-        
-        # Formato SI (.2s) para los ejes (ej. 1.5M, 500k) y el tooltip con el monto completo para no perder el número real
-        fig_linea.update_layout(yaxis_tickformat="$.2s", hovermode="x unified")
-        fig_linea.update_traces(hovertemplate="%{y:$,.2f}")
-        
-        st.plotly_chart(fig_linea, use_container_width=True)
-        
-        st.divider()
-        
-        # --- GRÁFICO 2: RANKING HORIZONTAL DE INGRESOS CON PLOTLY ---
-        st.write("### 👥 Volumen Real Acumulado por Cliente (Moneda Homogénea)")
-        
-        df_ranking_clientes = df_motor_interno.groupby('Denominación Receptor')['Facturacion $ Actualizada'].sum().reset_index()
-        # Para barras horizontales en Plotly, ordenamos ascendente para que el más grande quede arriba
-        df_ranking_clientes = df_ranking_clientes.sort_values(by='Facturacion $ Actualizada', ascending=True)
-        
-        fig_barras = px.bar(
-            df_ranking_clientes, 
-            x='Facturacion $ Actualizada', 
-            y='Denominación Receptor',
-            orientation='h', # Convertimos a barras horizontales para leer bien los nombres
-            labels={'Facturacion $ Actualizada': 'Total Facturado Real', 'Denominación Receptor': 'Cliente'},
-            color_discrete_sequence=['#AB63FA']
-        )
-        
-        # Formateamos eje X con sufijos k y M, y tooltip completo
-        fig_barras.update_layout(xaxis_tickformat="$.2s", height=600) # Le damos un poco más de altura para que respiren los nombres
-        fig_barras.update_traces(hovertemplate="%{x:$,.2f}")
-        
-        st.plotly_chart(fig_barras, use_container_width=True)
+        if len(df_motor_filtrado) == 0:
+            st.warning("No hay registros de facturas para el rango de tiempo seleccionado.")
+        else:
+            # --- CÁLCULO DE KPIs FILTRADOS ---
+            total_nominal = df_motor_filtrado['Facturacion $'].sum()
+            total_actualizado = df_motor_filtrado['Facturacion $ Actualizada'].sum()
+            
+            # Para los KPIs de corto plazo, mantenemos la foto real del último mes de la base completa
+            mes_maximo_real = df_motor_interno['Mes_Indice'].max()
+            mes_hace_12_real = mes_maximo_real - pd.DateOffset(months=11)
+            
+            fact_ult_mes = df_motor_interno[df_motor_interno['Mes_Indice'] == mes_maximo_real]['Facturacion $ Actualizada'].sum()
+            fact_ult_12m = df_motor_interno[df_motor_interno['Mes_Indice'] >= mes_hace_12_real]['Facturacion $ Actualizada'].sum()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Nominal en Rango", formato_abreviado(total_nominal))
+            col2.metric("Real en Rango (A hoy)", formato_abreviado(total_actualizado))
+            col3.metric("Últimos 12 Meses (Estudio)", formato_abreviado(fact_ult_12m))
+            col4.metric(f"Último Mes Real ({mes_maximo_real.strftime('%m/%Y')})", formato_abreviado(fact_ult_mes))
+            
+            st.divider()
+            
+            # --- GRÁFICO 1: EVOLUCIÓN HISTÓRICA FILTRADA ---
+            st.write("### 📉 Evolución Mensual de Facturación: Nominal vs. Plata de Hoy")
+            
+            df_motor_filtrado['Año-Mes'] = df_motor_filtrado['Mes_Indice'].dt.strftime('%Y-%m')
+            df_evolucion_mensual = df_motor_filtrado.groupby('Año-Mes')[['Facturacion $', 'Facturacion $ Actualizada']].sum().reset_index()
+            df_evolucion_mensual.rename(columns={
+                'Facturacion $': 'Nominal Histórica', 
+                'Facturacion $ Actualizada': 'Real Indexada'
+            }, inplace=True)
+            
+            fig_linea = px.line(
+                df_evolucion_mensual, 
+                x='Año-Mes', 
+                y=['Nominal Histórica', 'Real Indexada'],
+                labels={'value': 'Importe', 'variable': 'Tipo de Facturación', 'Año-Mes': 'Mes'},
+                color_discrete_sequence=['#636EFA', '#00CC96']
+            )
+            fig_linea.update_layout(yaxis_tickformat="$.2s", hovermode="x unified")
+            fig_linea.update_traces(hovertemplate="%{y:$,.2f}")
+            st.plotly_chart(fig_linea, use_container_width=True)
+            
+            st.divider()
+            
+            # --- GRÁFICO 2: RANKING HORIZONTAL FILTRADO ---
+            st.write("### 👥 Volumen Real Acumulado por Cliente en el Período")
+            
+            df_ranking_clientes = df_motor_filtrado.groupby('Denominación Receptor')['Facturacion $ Actualizada'].sum().reset_index()
+            df_ranking_clientes = df_ranking_clientes.sort_values(by='Facturacion $ Actualizada', ascending=True)
+            
+            fig_barras = px.bar(
+                df_ranking_clientes, 
+                x='Facturacion $ Actualizada', 
+                y='Denominación Receptor',
+                orientation='h',
+                labels={'Facturacion $ Actualizada': 'Total Facturado Real', 'Denominación Receptor': 'Cliente'},
+                color_discrete_sequence=['#AB63FA']
+            )
+            fig_barras.update_layout(xaxis_tickformat="$.2s", height=600)
+            fig_barras.update_traces(hovertemplate="%{x:$,.2f}")
+            st.plotly_chart(fig_barras, use_container_width=True)
 
     with tab2:
         st.subheader("🛠️ Entorno Interactiva de Actualización de Abonos")
@@ -254,7 +293,7 @@ if df_historial is not None:
                     df_facturas_orig.to_excel(writer, sheet_name='Facturas', index=False)
                     df_indices_orig.to_excel(writer, sheet_name='Indices', index=False)
                 
-                st.success(f"¡Se actualizaron con éxito {cambios_realizados} clientes en la base de datos viva!")
+                st.success(f"¡Se actualizaron con éxito {cambios_realizados} clientes!")
                 st.cache_data.clear()
                 st.rerun()
             else:
@@ -278,9 +317,15 @@ if df_historial is not None:
         )
         
     with tab4:
-        st.subheader("🧾 Historial de Facturación (Valores a Plata de Hoy)")
+        st.subheader("🧾 Historial de Facturación Filtrado (Valores a Plata de Hoy)")
+        
+        # Limpiamos la columna de fecha técnica y reordenamos para mostrar en la tabla
+        df_historial_render = df_historial_filtrado.copy()
+        df_historial_render['Fecha'] = df_historial_render['Fecha_dt'].dt.strftime('%d/%m/%Y')
+        columnas_tabla = ['Fecha', 'Tipo', 'Punto de Venta', 'Número Desde', 'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada']
+        
         st.dataframe(
-            df_historial, 
+            df_historial_render[columnas_tabla], 
             use_container_width=True,
             column_config={
                 "Facturacion $": st.column_config.NumberColumn("Facturación Original", format="$ %.2f"),
