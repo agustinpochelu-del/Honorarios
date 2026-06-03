@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import requests
+import os
 from io import BytesIO
 from datetime import datetime
 
@@ -8,27 +8,18 @@ from datetime import datetime
 st.set_page_config(page_title="Control de Honorarios", layout="wide")
 st.title("📊 Panel de Control de Facturación y Honorarios")
 
-# 2. CONFIGURACIÓN DEL ORIGEN DE DATOS (ONEDRIVE)
-USAR_NUBE = True
-URL_NUBE = "https://1drv.ms/x/c/d157fed8b9ecc198/IQBjbEIKjpuyQ5t6EsSIuXVmAXAon-EyPNaN4Ae0qbskn2E?download=1"
+# Ruta del archivo unificado en el servidor
+ARCHIVO_LOCAL = "Honosrario NM.xlsx"
 
-# 3. Motor de carga y cálculo de actualización
-@st.cache_data(ttl=600)
-def cargar_y_procesar_datos(origen, es_nube):
-    if es_nube:
-        try:
-            respuesta = requests.get(origen)
-            respuesta.raise_for_status() 
-            archivo_final = BytesIO(respuesta.content)
-        except Exception as e:
-            raise Exception(f"Error al descargar desde OneDrive: {e}")
-    else:
-        archivo_final = origen
+# 2. Motor de carga y cálculo de actualización
+def cargar_y_procesar_datos(ruta_archivo):
+    if not os.path.exists(ruta_archivo):
+        return None, None, None, None, None, None
 
-    # Leemos las tres hojas del archivo XLSX
-    df_facturas = pd.read_excel(archivo_final, sheet_name="Facturas")
-    df_clientes = pd.read_excel(archivo_final, sheet_name="Clientes")
-    df_indices = pd.read_excel(archivo_final, sheet_name="Indices")
+    # Leemos las tres hojas del archivo XLSX original
+    df_facturas = pd.read_excel(ruta_archivo, sheet_name="Facturas")
+    df_clientes = pd.read_excel(ruta_archivo, sheet_name="Clientes")
+    df_indices = pd.read_excel(ruta_archivo, sheet_name="Indices")
     
     # Limpieza preventiva de espacios en los nombres de las columnas
     df_facturas.columns = df_facturas.columns.str.strip()
@@ -68,7 +59,7 @@ def cargar_y_procesar_datos(origen, es_nube):
         how='left'
     )
     
-    # Ajuste de coeficiente de resguardo e indexación histórica
+    # Ajuste de coeficiente e indexación histórica
     df_res['Coeficiente'] = ultimo_indice / df_res['IPC  IPIM']
     df_res['Coeficiente'] = df_res['Coeficiente'].fillna(1.0)
     df_res['Facturacion $ Actualizada'] = df_res['Facturacion $'] * df_res['Coeficiente']
@@ -87,7 +78,7 @@ def cargar_y_procesar_datos(origen, es_nube):
     df_clientes_proc['Actualizacion_dt'] = pd.to_datetime(df_clientes_proc['Actualizacion'], errors='coerce')
     df_clientes_proc['periodos'] = pd.to_numeric(df_clientes_proc['periodos'], errors='coerce').fillna(0).astype(int)
     
-    # Mapeo del IPC correspondiente al mes de la última actualización de cada cliente
+    # Mapeo del IPC correspondiente a la fecha de última actualización
     df_clientes_proc['Mes_Actualizacion_dt'] = df_clientes_proc['Actualizacion_dt'].dt.to_period('M').dt.to_timestamp()
     df_clientes_proc = pd.merge(
         df_clientes_proc, 
@@ -97,16 +88,13 @@ def cargar_y_procesar_datos(origen, es_nube):
         how='left'
     ).rename(columns={'IPC  IPIM': 'IPC_Ult_Actualizacion'}).drop(columns=['MES_dt', 'Mes_Actualizacion_dt'])
     
-    # Cálculo de antigüedad en meses y alertas
+    # Antigüedad y sugeridos
     hoy = datetime.now()
     def calcular_metricas_comerciales(row):
         if pd.isna(row['Actualizacion_dt']):
             return pd.Series([0, "OK", row['precio']])
-        
-        # Cantidad exacta de meses de antigüedad de la última actualización
         meses_antigüedad = (hoy.year - row['Actualizacion_dt'].year) * 12 + (hoy.month - row['Actualizacion_dt'].month)
         
-        # Cálculo del honorario sugerido por inflación acumulada
         if pd.notna(row['IPC_Ult_Actualizacion']) and row['IPC_Ult_Actualizacion'] > 0:
             coef_inflacion = ultimo_indice / row['IPC_Ult_Actualizacion']
             sugerido = row['precio'] * coef_inflacion
@@ -119,20 +107,17 @@ def cargar_y_procesar_datos(origen, es_nube):
     df_clientes_proc[['Meses Desactualizado', 'Alerta_Revisión', 'Honorario Sugerido']] = df_clientes_proc.apply(calcular_metricas_comerciales, axis=1)
     df_clientes_proc['Meses Desactualizado'] = df_clientes_proc['Meses Desactualizado'].astype(int)
     
-    # Orden jerárquico contable
+    # Ordenamiento
     df_clientes_proc['Orden_Estado'] = df_clientes_proc['Estado'].apply(lambda x: 0 if x == 'Activo' else 1)
     df_clientes_proc = df_clientes_proc.sort_values(by=['Orden_Estado', 'precio'], ascending=[True, False]).drop(columns=['Orden_Estado'])
-    
-    # Guardamos la fecha limpia para exposición visual
     df_clientes_proc['Actualizacion_Str'] = df_clientes_proc['Actualizacion_dt'].dt.strftime('%m/%Y')
     
     df_indices_visual = df_indices.copy()
     df_indices_visual['MES'] = df_indices_visual['MES_dt'].dt.strftime('%m/%Y')
     df_indices_visual = df_indices_visual.drop(columns=['MES_dt'])
     
-    return df_historial_visual, df_clientes_proc, df_indices_visual, ultimo_mes, ultimo_indice, df_clientes
+    return df_historial_visual, df_clientes_proc, df_indices_visual, ultimo_mes, ultimo_indice, df_clientes, df_facturas, df_indices
 
-# Estilos condicionales visuales
 def colorear_clientes(row):
     estilos = [''] * len(row)
     if row['Estado'] == 'Inactivo':
@@ -142,17 +127,25 @@ def colorear_clientes(row):
         estilos[idx_alerta] = 'background-color: #fef08a; color: #854d0e; font-weight: bold;'
     return estilos
 
-try:
-    df_facturacion_completa, df_clientes, df_indices, ult_mes, ult_ind, df_clientes_original = cargar_y_procesar_datos(URL_NUBE, USAR_NUBE)
-    
-    st.success(f"¡Conectado a OneDrive con éxito! Moneda homogénea base: {ult_mes.strftime('%m/%Y')} (Índice: {ult_ind})")
-    
-    if st.button("🔄 Sincronizar cambios recientes de OneDrive"):
+# --- BLOQUE PRINCIPAL DE EJECUCIÓN ---
+df_facturacion_completa, df_clientes, df_indices_vis, ult_mes, ult_ind, df_clientes_orig, df_facturas_orig, df_indices_orig = cargar_y_procesar_datos(ARCHIVO_LOCAL)
+
+# Menú lateral para subir el archivo inicialmente o pisarlo con datos nuevos de ARCA
+with st.sidebar:
+    st.header("📁 Control del Archivo Maestro")
+    archivo_subido = st.file_uploader("Subir o actualizar Excel maestro (Honosrario NM.xlsx)", type=["xlsx"])
+    if archivo_subido is not None:
+        with open(ARCHIVO_LOCAL, "wb") as f:
+            f.write(archivo_subido.getbuffer())
+        st.success("¡Archivo maestro cargado/actualizado en el servidor!")
         st.cache_data.clear()
         st.rerun()
+
+if df_facturacion_completa is not None:
+    st.success(f"¡Base de datos activa! Moneda homogénea base: {ult_mes.strftime('%m/%Y')} (Índice: {ult_ind})")
     
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📈 Simulador y Propuestas", 
+        "📈 Simulador y Ajustes v7", 
         "👥 Maestro de Clientes", 
         "🧾 Facturas Procesadas", 
         "📊 Índices Históricos"
@@ -160,15 +153,13 @@ try:
     
     with tab1:
         st.subheader("🛠️ Entorno Interactiva de Actualización de Abonos")
-        st.write("A continuación se listan los clientes activos cuyos contratos requieren revisión técnica por inflación. Podés editar directamente los valores en la columna **'Nuevo Precio Pactado'** para simular o consolidar tu estrategia comercial:")
+        st.write("Modificá los valores en **'Nuevo Precio Pactado'**. Al guardar, se actualizará directamente la planilla base.")
         
-        # Filtramos solo los activos que requieren revisión o tienen precio para simular
         df_simulacion = df_clientes[df_clientes['Estado'] == 'Activo'].copy()
-        df_simulacion['Nuevo Precio Pactado'] = df_simulacion['precio'] # Inicialmente igual al precio actual
+        df_simulacion['Nuevo Precio Pactado'] = df_simulacion['precio']
         
         columnas_sim = ['Nro. Doc. Receptor', 'Denominación Receptor', 'precio', 'Meses Desactualizado', 'Honorario Sugerido', 'Nuevo Precio Pactado']
         
-        # Permitimos la edición interactiva de la tabla en pantalla
         df_editado = st.data_editor(
             df_simulacion[columnas_sim],
             use_container_width=True,
@@ -182,44 +173,40 @@ try:
             key="editor_abonos"
         )
         
-        # Lógica para armar el archivo de salida para OneDrive si el usuario quiere aplicar los cambios
-        if st.button("💾 Generar Nueva Planilla de Clientes Actualizada"):
-            df_maestro_nuevo = df_clientes_original.copy()
+        # EL NUEVO BOTÓN DE GUARDADO REAL: SOBREESCRIBE EL EXCEL
+        if st.button("💾 Guardar y Actualizar Base de Datos"):
+            df_maestro_nuevo = df_clientes_orig.copy()
+            cambios_realizados = 0
             
-            # Reemplazamos los precios viejos por los nuevos pactados en la simulación
             for idx, row in df_editado.iterrows():
                 cuit = row['Nro. Doc. Receptor']
                 nuevo_val = row['Nuevo Precio Pactado']
                 
-                # Si el precio cambió, lo actualizamos en la tabla original y cambiamos la fecha de actualización a hoy
                 if nuevo_val != row['precio']:
                     df_maestro_nuevo.loc[df_maestro_nuevo['Nro. Doc. Receptor'] == cuit, 'precio'] = nuevo_val
                     df_maestro_nuevo.loc[df_maestro_nuevo['Nro. Doc. Receptor'] == cuit, 'Actualizacion'] = datetime.today().strftime('%Y-%m-%d')
+                    cambios_realizados += 1
             
-            # Convertimos a formato Excel en memoria para la descarga
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_maestro_nuevo.to_excel(writer, sheet_name='Clientes', index=False)
-                # Nota técnica: Para no romper el Excel original, lo ideal es copiar esta solapa o descargar el bloque unificado.
-            
-            st.success("¡Estrategia procesada! Hacé clic abajo para descargar tu nueva solapa de clientes y pegarla en tu archivo de OneDrive:")
-            st.download_button(
-                label="📥 Descargar Clientes Actualizados.xlsx",
-                data=output.getvalue(),
-                file_name="Clientes_Actualizados.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            if cambios_realizados > 0:
+                # Escribimos de vuelta las tres pestañas en el MISMO archivo Excel para no romper nada
+                with pd.ExcelWriter(ARCHIVO_LOCAL, engine='openpyxl') as writer:
+                    df_maestro_nuevo.to_excel(writer, sheet_name='Clientes', index=False)
+                    df_facturas_orig.to_excel(writer, sheet_name='Facturas', index=False)
+                    df_indices_orig.to_excel(writer, sheet_name='Indices', index=False)
+                
+                st.success(f"¡Se actualizaron con éxito {cambios_realizados} clientes en la base de datos viva!")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.info("No se detectaron cambios en la columna de Precios Pactados.")
 
     with tab2:
         st.subheader("👥 Maestro de Clientes Completo")
-        
-        # Preparamos las columnas visuales limpias
         df_clientes_vista = df_clientes.copy()
         df_clientes_vista['Actualizacion'] = df_clientes_vista['Actualizacion_Str']
         columnas_maestro_vis = ['Nro. Doc. Receptor', 'Denominación Receptor', 'Formalidad', 'Periodicidad', 'precio', 'Estado', 'Actualiza', 'Actualizacion', 'periodos', 'Meses Desactualizado', 'Alerta_Revisión']
         
         df_estilado = df_clientes_vista[columnas_maestro_vis].style.apply(colorear_clientes, axis=1)
-        
         st.dataframe(
             df_estilado, 
             use_container_width=True,
@@ -243,7 +230,6 @@ try:
         
     with tab4:
         st.subheader("📊 Índices de Referencia (IPC / IPIM)")
-        st.dataframe(df_indices, use_container_width=True)
-
-except Exception as e:
-    st.error(f"Ocurrió un error al procesar los datos: {e}")
+        st.dataframe(df_indices_vis, use_container_width=True)
+else:
+    st.warning("⚠️ Todavía no hay ninguna base de datos activa en el sistema. Por favor, usa el módulo de la barra lateral izquierda para subir tu archivo 'Honosrario NM.xlsx' por primera vez.")
