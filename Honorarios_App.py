@@ -50,7 +50,7 @@ def cargar_y_procesar_datos(origen, es_nube):
     # Llevamos la fecha de la factura al día 1 del mes para cruzar con la tabla de índices
     df_facturas['Mes_Indice'] = df_facturas['Fecha_dt'].dt.to_period('M').dt.to_timestamp()
     
-    # Buscamos el último índice disponible
+    # Buscamos el último índice disponible (el más reciente según calendario)
     df_indices_ordenado = df_indices.sort_values('MES_dt')
     ultimo_mes = df_indices_ordenado.iloc[-1]['MES_dt']
     ultimo_indice = df_indices_ordenado.iloc[-1]['IPC  IPIM']
@@ -64,8 +64,15 @@ def cargar_y_procesar_datos(origen, es_nube):
         how='left'
     )
     
-    # Calculamos el coeficiente y la facturación real a hoy
+    # --- AJUSTE DE COEFICIENTE DE RESGUARDO ---
+    # Calculamos el coeficiente nominal
     df_res['Coeficiente'] = ultimo_indice / df_res['IPC  IPIM']
+    
+    # REGLA CONTABLE: Si el período de la factura es igual o posterior al último índice disponible
+    # (o si no encuentra el índice en la tabla), forzamos a que el coeficiente sea 1.
+    df_res['Coeficiente'] = df_res['Coeficiente'].fillna(1.0)
+    
+    # Multiplicamos la facturación original por el coeficiente definitivo
     df_res['Facturacion $ Actualizada'] = df_res['Facturacion $'] * df_res['Coeficiente']
     
     # Cruzamos con el Maestro de Clientes para traer la Denominación
@@ -133,7 +140,6 @@ try:
         else:
             df_mostrar_clientes = df_clientes
             
-        # Mostramos la tabla formateando la columna 'precio' como moneda con 2 decimales
         st.dataframe(
             df_mostrar_clientes, 
             use_container_width=True,
@@ -144,7 +150,6 @@ try:
         
     with tab3:
         st.subheader("Historial de Facturación (Valores a Plata de Hoy)")
-        # Mostramos el historial formateando ambas columnas de dinero
         st.dataframe(
             df_facturacion_completa, 
             use_container_width=True,
@@ -156,7 +161,6 @@ try:
         
     with tab4:
         st.subheader("Índices de Referencia (IPC / IPIM)")
-        # Dejamos los índices tal cual para no perder la precisión de la tasa de inflación
         st.dataframe(df_indices, use_container_width=True)
 
 except Exception as e:
