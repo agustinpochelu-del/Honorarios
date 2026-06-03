@@ -14,7 +14,7 @@ ARCHIVO_LOCAL = "Honosrario NM.xlsx"
 # 2. Motor de carga y cálculo de actualización
 def cargar_y_procesar_datos(ruta_archivo):
     if not os.path.exists(ruta_archivo):
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
     # Leemos las tres hojas del archivo XLSX original
     df_facturas = pd.read_excel(ruta_archivo, sheet_name="Facturas")
@@ -116,7 +116,7 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_indices_visual['MES'] = df_indices_visual['MES_dt'].dt.strftime('%m/%Y')
     df_indices_visual = df_indices_visual.drop(columns=['MES_dt'])
     
-    return df_historial_visual, df_clientes_proc, df_indices_visual, ultimo_mes, ultimo_indice, df_clientes, df_facturas, df_indices
+    return df_historial_visual, df_clientes_proc, df_indices_visual, ultimo_mes, ultimo_indice, df_clientes, df_facturas, df_indices, df_final
 
 def colorear_clientes(row):
     estilos = [''] * len(row)
@@ -128,16 +128,16 @@ def colorear_clientes(row):
     return estilos
 
 # --- BLOQUE PRINCIPAL DE EJECUCIÓN ---
-df_facturacion_completa, df_clientes, df_indices_vis, ult_mes, ult_ind, df_clientes_orig, df_facturas_orig, df_indices_orig = cargar_y_procesar_datos(ARCHIVO_LOCAL)
+df_facturacion_completa, df_clientes, df_indices_vis, ult_mes, ult_ind, df_clientes_orig, df_facturas_orig, df_indices_orig, df_motor_interno = cargar_y_procesar_datos(ARCHIVO_LOCAL)
 
-# Menú lateral para subir el archivo inicialmente o pisarlo con datos nuevos de ARCA
+# Menú lateral para el archivo maestro
 with st.sidebar:
     st.header("📁 Control del Archivo Maestro")
     archivo_subido = st.file_uploader("Subir o actualizar Excel maestro (Honosrario NM.xlsx)", type=["xlsx"])
     if archivo_subido is not None:
         with open(ARCHIVO_LOCAL, "wb") as f:
             f.write(archivo_subido.getbuffer())
-        st.success("¡Archivo maestro cargado/actualizado en el servidor!")
+        st.success("¡Archivo maestro cargado/actualizado!")
         st.cache_data.clear()
         st.rerun()
 
@@ -145,60 +145,57 @@ if df_facturacion_completa is not None:
     st.success(f"¡Base de datos activa! Moneda homogénea base: {ult_mes.strftime('%m/%Y')} (Índice: {ult_ind})")
     
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📈 Simulador y Ajustes v7", 
+        "📈 Estadísticas y Gráficos", 
         "👥 Maestro de Clientes", 
         "🧾 Facturas Procesadas", 
         "📊 Índices Históricos"
     ])
     
     with tab1:
-        st.subheader("🛠️ Entorno Interactiva de Actualización de Abonos")
-        st.write("Modificá los valores en **'Nuevo Precio Pactado'**. Al guardar, se actualizará directamente la planilla base.")
+        st.subheader("📊 Análisis Evolutivo Contable por Cliente y Período")
         
-        df_simulacion = df_clientes[df_clientes['Estado'] == 'Activo'].copy()
-        df_simulacion['Nuevo Precio Pactado'] = df_simulacion['precio']
+        # --- BLOQUE DE KPIs ---
+        total_nominal = df_motor_interno['Facturacion $'].sum()
+        total_actualizado = df_motor_interno['Facturacion $ Actualizada'].sum()
+        total_comprobantes = len(df_motor_interno)
         
-        columnas_sim = ['Nro. Doc. Receptor', 'Denominación Receptor', 'precio', 'Meses Desactualizado', 'Honorario Sugerido', 'Nuevo Precio Pactado']
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Facturación Histórica Total (Nominal)", f"$ {total_nominal:,.2f}")
+        col2.metric("Facturación Real Total (A Plata de Hoy)", f"$ {total_actualizado:,.2f}")
+        col3.metric("Comprobantes Emitidos", f"{total_comprobantes} facturas")
         
-        df_editado = st.data_editor(
-            df_simulacion[columnas_sim],
-            use_container_width=True,
-            disabled=['Nro. Doc. Receptor', 'Denominación Receptor', 'precio', 'Meses Desactualizado', 'Honorario Sugerido'],
-            column_config={
-                "precio": st.column_config.NumberColumn("Precio Actual", format="$ %.2f"),
-                "Honorario Sugerido": st.column_config.NumberColumn("Sugerido por IPC", format="$ %.2f"),
-                "Nuevo Precio Pactado": st.column_config.NumberColumn("Nuevo Precio Pactado ✏️", format="$ %.2f"),
-                "Meses Desactualizado": st.column_config.NumberColumn("Meses Inmóvil", format="%d")
-            },
-            key="editor_abonos"
-        )
+        st.divider()
         
-        # EL NUEVO BOTÓN DE GUARDADO REAL: SOBREESCRIBE EL EXCEL
-        if st.button("💾 Guardar y Actualizar Base de Datos"):
-            df_maestro_nuevo = df_clientes_orig.copy()
-            cambios_realizados = 0
-            
-            for idx, row in df_editado.iterrows():
-                cuit = row['Nro. Doc. Receptor']
-                nuevo_val = row['Nuevo Precio Pactado']
-                
-                if nuevo_val != row['precio']:
-                    df_maestro_nuevo.loc[df_maestro_nuevo['Nro. Doc. Receptor'] == cuit, 'precio'] = nuevo_val
-                    df_maestro_nuevo.loc[df_maestro_nuevo['Nro. Doc. Receptor'] == cuit, 'Actualizacion'] = datetime.today().strftime('%Y-%m-%d')
-                    cambios_realizados += 1
-            
-            if cambios_realizados > 0:
-                # Escribimos de vuelta las tres pestañas en el MISMO archivo Excel para no romper nada
-                with pd.ExcelWriter(ARCHIVO_LOCAL, engine='openpyxl') as writer:
-                    df_maestro_nuevo.to_excel(writer, sheet_name='Clientes', index=False)
-                    df_facturas_orig.to_excel(writer, sheet_name='Facturas', index=False)
-                    df_indices_orig.to_excel(writer, sheet_name='Indices', index=False)
-                
-                st.success(f"¡Se actualizaron con éxito {cambios_realizados} clientes en la base de datos viva!")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.info("No se detectaron cambios en la columna de Precios Pactados.")
+        # --- GRÁFICO 1: EVOLUCIÓN HISTÓRICA (NOMINAL VS ACTUALIZADO) ---
+        st.write("### 📉 Evolución Mensual de Facturación: Nominal vs. Plata de Hoy")
+        st.write("Este gráfico agrupa la facturación total por mes. La línea **Actualizada** representa el verdadero poder de compra histórico llevado a moneda homogénea corriente:")
+        
+        # Agrupamos los datos por mes de factura (año-mes)
+        df_motor_interno['Año-Mes'] = df_motor_interno['Mes_Indice'].dt.strftime('%Y-%m')
+        df_evolucion_mensual = df_motor_interno.groupby('Año-Mes')[['Facturacion $', 'Facturacion $ Actualizada']].sum()
+        
+        # Renombramos columnas para que el gráfico quede prolijo
+        df_evolucion_mensual.columns = ['Facturación Nominal', 'Facturación Real (A Plata de Hoy)']
+        
+        # Renderizamos el gráfico de líneas de Streamlit
+        st.line_chart(df_evolucion_mensual, use_container_width=True)
+        
+        st.divider()
+        
+        # --- GRÁFICO 2: RANKING DE INGRESOS POR CLIENTE ---
+        st.write("### 👥 Volumen Real Acumulado por Cliente (Moneda Homogénea)")
+        st.write("Muestra cuánto aportó históricamente cada cliente al estudio en total, sumando todas sus facturas con valores indexados a moneda de hoy:")
+        
+        # Agrupamos por Denominación del cliente y sumamos el valor actualizado
+        df_ranking_clientes = df_motor_interno.groupby('Denominación Receptor')['Facturacion $ Actualizada'].sum().reset_index()
+        df_ranking_clientes = df_ranking_clientes.sort_values(by='Facturacion $ Actualizada', ascending=False)
+        
+        # Lo configuramos para que el índice sea el nombre del cliente para el gráfico de barras
+        df_ranking_grafico = df_ranking_clientes.set_index('Denominación Receptor')
+        df_ranking_grafico.columns = ['Total Facturado Real']
+        
+        # Renderizamos el gráfico de barras
+        st.bar_chart(df_ranking_grafico, use_container_width=True)
 
     with tab2:
         st.subheader("👥 Maestro de Clientes Completo")
