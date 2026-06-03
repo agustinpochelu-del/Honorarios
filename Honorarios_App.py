@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 from io import BytesIO
+from datetime import datetime
 
 # 1. Configuración de la página
 st.set_page_config(page_title="Control de Honorarios", layout="wide")
@@ -16,7 +17,6 @@ URL_NUBE = "https://1drv.ms/x/c/d157fed8b9ecc198/IQBjbEIKjpuyQ5t6EsSIuXVmAXAon-E
 # 3. Motor de carga y cálculo de actualización
 @st.cache_data(ttl=600)  # Se refresca automáticamente cada 10 minutos
 def cargar_y_procesar_datos(origen, es_nube):
-    # Si viene de la nube, descargamos el archivo en memoria antes de pasárselo a Pandas
     if es_nube:
         try:
             respuesta = requests.get(origen)
@@ -37,18 +37,18 @@ def cargar_y_procesar_datos(origen, es_nube):
     df_clientes.columns = df_clientes.columns.str.strip()
     df_indices.columns = df_indices.columns.str.strip()
     
-    # --- LIMPIEZA DE COLUMNAS COMENTADAS O VACÍAS EN ÍNDICES ---
-    # Eliminamos cualquier columna que empiece con 'Unnamed' o que esté vacía
+    # Limpieza de columnas comentadas o vacías en índices
     df_indices = df_indices.loc[:, ~df_indices.columns.str.contains('^Unnamed')]
-    # Nos aseguramos de mantener estrictamente las columnas esenciales por si acaso
     columnas_indices_validas = ['MES', 'IPC  IPIM']
     df_indices = df_indices[[col for col in columnas_indices_validas if col in df_indices.columns]]
     
     # Forzamos a que las columnas de valores sean numéricas
     df_indices['IPC  IPIM'] = pd.to_numeric(df_indices['IPC  IPIM'].astype(str).str.replace(',', '.'), errors='coerce')
     df_facturas['Facturacion $'] = pd.to_numeric(df_facturas['Facturacion $'].astype(str).str.replace(',', '.'), errors='coerce')
+    
+    # Limpieza estricta de la columna precio en clientes
     if 'precio' in df_clientes.columns:
-        df_clientes['precio'] = pd.to_numeric(df_clientes['precio'].astype(str).str.replace(',', '.'), errors='coerce')
+        df_clientes['precio'] = pd.to_numeric(df_clientes['precio'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
     
     # Conversión de Fechas internas
     df_facturas['Fecha_dt'] = pd.to_datetime(df_facturas['Fecha'], errors='coerce')
@@ -57,7 +57,7 @@ def cargar_y_procesar_datos(origen, es_nube):
     # Llevamos la fecha de la factura al día 1 del mes para cruzar con la tabla de índices
     df_facturas['Mes_Indice'] = df_facturas['Fecha_dt'].dt.to_period('M').dt.to_timestamp()
     
-    # Buscamos el último índice disponible (el más reciente según calendario)
+    # Buscamos el último índice disponible
     df_indices_ordenado = df_indices.sort_values('MES_dt')
     ultimo_mes = df_indices_ordenado.iloc[-1]['MES_dt']
     ultimo_indice = df_indices_ordenado.iloc[-1]['IPC  IPIM']
@@ -71,11 +71,9 @@ def cargar_y_procesar_datos(origen, es_nube):
         how='left'
     )
     
-    # --- AJUSTE DE COEFICIENTE DE RESGUARDO ---
+    # Ajuste de coeficiente de resguardo
     df_res['Coeficiente'] = ultimo_indice / df_res['IPC  IPIM']
     df_res['Coeficiente'] = df_res['Coeficiente'].fillna(1.0)
-    
-    # Multiplicamos la facturación original por el coeficiente definitivo
     df_res['Facturacion $ Actualizada'] = df_res['Facturacion $'] * df_res['Coeficiente']
     
     # Cruzamos con el Maestro de Clientes para traer la Denominación
@@ -87,37 +85,71 @@ def cargar_y_procesar_datos(origen, es_nube):
         'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada'
     ]
     df_historial_visual = df_final[[col for col in columnas_historial if col in df_final.columns]].copy()
-    
-    # Formateamos la fecha a DD/MM/YYYY
     df_historial_visual['Fecha'] = df_historial_visual['Fecha_dt'].dt.strftime('%d/%m/%Y')
     df_historial_visual = df_historial_visual.drop(columns=['Fecha_dt'])
     
-    # Reordenamos columnas
     columnas_ordenadas = ['Fecha', 'Tipo', 'Punto de Venta', 'Número Desde', 'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada']
     df_historial_visual = df_historial_visual[columnas_ordenadas]
     
-    # --- FORMATEO DE FECHAS EN CLIENTES E ÍNDICES (MM/YYYY) ---
-    df_clientes_visual = df_clientes.copy()
-    if 'Actualizacion' in df_clientes_visual.columns:
-        df_clientes_visual['Actualizacion'] = pd.to_datetime(df_clientes_visual['Actualizacion'], errors='coerce').dt.strftime('%m/%Y')
-        
+    # --- PROCESAMIENTO LOGÍSTICO DE CLIENTES (ORDENAMIENTO Y ALERTAS) ---
+    df_clientes_proc = df_clientes.copy()
+    
+    # Aseguramos que existan las columnas de control temporal
+    df_clientes_proc['Actualizacion_dt'] = pd.to_datetime(df_clientes_proc['Actualizacion'], errors='coerce')
+    df_clientes_proc['periodos'] = pd.to_numeric(df_clientes_proc['periodos'], errors='coerce').fillna(0)
+    
+    # Calculamos la alerta de vencimiento de honorario
+    hoy = datetime.now()
+    def verificar_vencimiento(row):
+        if pd.isna(row['Actualizacion_dt']) or row['Actualiza'] != 'Si' or row['Estado'] != 'Activo':
+            return "OK"
+        # Diferencia aproximada en meses
+        meses_transcurridos = (hoy.year - row['Actualizacion_dt'].year) * 12 + (hoy.month - row['Actualizacion_dt'].month)
+        if meses_transcurridos >= row['periodos']:
+            return "VENCIDO"
+        return "OK"
+    
+    df_clientes_proc['Alerta_Revisión'] = df_clientes_proc.apply(verificar_vencimiento, axis=1)
+    
+    # Ordenamos: Activos primero, e Inactivos abajo. Dentro de cada grupo, el de mayor precio primero.
+    # Convertimos temporalmente Estado a categoría o usamos ordenamiento booleano simulado (Activo > Inactivo)
+    df_clientes_proc['Orden_Estado'] = df_clientes_proc['Estado'].apply(lambda x: 0 if x == 'Activo' else 1)
+    df_clientes_proc = df_clientes_proc.sort_values(by=['Orden_Estado', 'precio'], ascending=[True, False])
+    df_clientes_proc = df_clientes_proc.drop(columns=['Orden_Estado'])
+    
+    # Formateamos la fecha interna para la visualización definitiva
+    df_clientes_proc['Actualizacion'] = df_clientes_proc['Actualizacion_dt'].dt.strftime('%m/%Y')
+    df_clientes_proc = df_clientes_proc.drop(columns=['Actualizacion_dt'])
+    
+    # --- FORMATEO DE ÍNDICES ---
     df_indices_visual = df_indices.copy()
     df_indices_visual['MES'] = df_indices_visual['MES_dt'].dt.strftime('%m/%Y')
     df_indices_visual = df_indices_visual.drop(columns=['MES_dt'])
     
-    return df_historial_visual, df_clientes_visual, df_indices_visual, ultimo_mes, ultimo_indice
+    return df_historial_visual, df_clientes_proc, df_indices_visual, ultimo_mes, ultimo_indice
+
+# Funciones de Estilos Condicionales para las filas de clientes
+def colorear_clientes(row):
+    estilos = [''] * len(row)
+    # Regla 1: Si está Inactivo, toda la fila se tiñe de un tono grisáceo/rojo tenue
+    if row['Estado'] == 'Inactivo':
+        return ['background-color: #fee2e2; color: #991b1b; opacity: 0.7;'] * len(row)
+    
+    # Regla 2: Si está Activo pero el abono está VENCIDO, resaltamos la alerta en amarillo/naranja contable
+    if row['Alerta_Revisión'] == 'VENCIDO':
+        # Buscamos el índice de la columna Alerta_Revisión para pintarla específicamente
+        idx_alerta = row.index.get_loc('Alerta_Revisión')
+        estilos[idx_alerta] = 'background-color: #fef08a; color: #854d0e; font-weight: bold;'
+    return estilos
 
 # Determinamos el recurso a leer
 recurso = URL_NUBE if USAR_NUBE else "Honosrario NM.xlsx"
 
 try:
-    # Procesamos la información
     df_facturacion_completa, df_clientes, df_indices, ult_mes, ult_ind = cargar_y_procesar_datos(recurso, USAR_NUBE)
     
-    # Cartel informativo
     st.success(f"¡Conectado a OneDrive con éxito! Moneda homogénea base: {ult_mes.strftime('%m/%Y')} (Índice: {ult_ind})")
     
-    # Botón manual para forzar recarga
     if st.button("🔄 Sincronizar cambios recientes de OneDrive"):
         st.cache_data.clear()
         st.rerun()
@@ -132,24 +164,23 @@ try:
     
     with tab1:
         st.subheader("Análisis Global de Facturación")
-        st.info("Espacio listo para armar gráficos y las alertas de revisión de abonos.")
+        st.info("Espacio listo para armar gráficos contables sobre la facturación indexada.")
         
     with tab2:
-        st.subheader("Maestro de Clientes")
-        ver_solo_activos = st.checkbox("Mostrar solo clientes Activos", value=True)
+        st.subheader("Maestro y Control de Abonos (Priorizado por Estado y Valor)")
         
-        if ver_solo_activos:
-            df_mostrar_clientes = df_clientes[df_clientes['Estado'] == 'Activo']
-        else:
-            df_mostrar_clientes = df_clientes
-            
+        # Aplicamos el formateador de estilos condicionales de Pandas antes de renderizar
+        df_estilado = df_clientes.style.apply(colorear_clientes, axis=1)
+        
         st.dataframe(
-            df_mostrar_clientes, 
+            df_estilado, 
             use_container_width=True,
             column_config={
-                "precio": st.column_config.NumberColumn("Precio Unitario", format="$ %.2f")
+                "precio": st.column_config.NumberColumn("Precio Unitario", format="$ %.2f"),
+                "Alerta_Revisión": st.column_config.TextColumn("Estado de Revisión")
             }
         )
+        st.caption("💡 *Nota visual: Las filas rojas indican clientes Inactivos. Las celdas resaltadas en amarillo marcan que el plazo de revisión técnica (periodos) expiró respecto a la fecha de última actualización.*")
         
     with tab3:
         st.subheader("Historial de Facturación (Valores a Plata de Hoy)")
