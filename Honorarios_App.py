@@ -50,14 +50,15 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_indices = df_indices.loc[:, ~df_indices.columns.str.contains('^Unnamed')]
     df_indices = df_indices[['MES', 'IPC  IPIM']]
     
-    # Limpieza y formateo de nuevas columnas clave
+    # --- CORRECCIÓN LECTURA CUIT Y PUNTO DE VENTA ---
     if 'Emisor' in df_facturas.columns:
-        df_facturas['Emisor'] = df_facturas['Emisor'].fillna(0).astype(int).astype(str)
+        # Forzamos conversión a string, eliminamos ".0" si pandas lo leyó como float y limpiamos espacios
+        df_facturas['Emisor'] = df_facturas['Emisor'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
     else:
-        df_facturas['Emisor'] = CUIT_AGUSTIN # Fallback por si la columna falta
+        df_facturas['Emisor'] = CUIT_AGUSTIN 
         
     if 'Punto de Venta' in df_facturas.columns:
-        df_facturas['Punto de Venta'] = df_facturas['Punto de Venta'].fillna(0).astype(int).astype(str)
+        df_facturas['Punto de Venta'] = df_facturas['Punto de Venta'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
         
     df_indices['IPC  IPIM'] = pd.to_numeric(df_indices['IPC  IPIM'].astype(str).str.replace(',', '.'), errors='coerce')
     df_facturas['Facturacion $'] = pd.to_numeric(df_facturas['Facturacion $'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -125,10 +126,10 @@ def colorear_clientes(row):
 df_historial_base, df_clientes, df_indices_vis, ult_mes, ult_ind, df_clientes_orig, df_facturas_orig, df_indices_orig, df_motor_interno = cargar_y_procesar_datos(ARCHIVO_LOCAL)
 
 if df_historial_base is None:
-    st.error(f"⚠️ No se encontró '{ARCHIVO_LOCAL}'.")
+    st.error(f"⚠️ No se encontró '{ARCHIVO_LOCAL}'. Asegurate de cargar el archivo base en el servidor.")
     st.stop()
 
-# --- CÁLCULO DE ALERTAS PREVIAS ---
+# --- CÁLCULO DE SEMÁFOROS PREVIOS ---
 estado_honorarios = "🟢"
 if df_clientes is not None and not df_clientes[df_clientes['Alerta_Revisión'] == 'VENCIDO'].empty:
     estado_honorarios = "🔴"
@@ -146,18 +147,18 @@ if df_historial_base is not None:
         promedio = fact_3m / 3 if fact_3m > 0 else fact_12m / 12
         
         margen = ESCALAS_MONOTRIBUTO[cat_actual] - fact_12m
-        if margen < 0: return 3, margen, promedio, fact_12m
-        elif margen <= promedio: return 2, margen, promedio, fact_12m
-        else: return 1, margen, promedio, fact_12m
+        if margen < 0: return 3
+        elif margen <= promedio: return 2
+        else: return 1
 
-    nivel_ag, margen_ag, prom_ag, tot12_ag = calc_alert_afip(CUIT_AGUSTIN, st.session_state['cat_agustin'])
-    nivel_la, margen_la, prom_la, tot12_la = calc_alert_afip(CUIT_LAURA, st.session_state['cat_laura'])
+    nivel_ag = calc_alert_afip(CUIT_AGUSTIN, st.session_state['cat_agustin'])
+    nivel_la = calc_alert_afip(CUIT_LAURA, st.session_state['cat_laura'])
     
     max_alerta = max(nivel_ag, nivel_la)
     if max_alerta == 3: estado_afip = "🔴"
     elif max_alerta == 2: estado_afip = "🟡"
 
-# --- MENÚ LATERAL ---
+# --- MENÚ LATERAL LIMPIO ---
 with st.sidebar:
     st.header("Navegación del Sistema")
     MENU_ESTADISTICAS = "📈 Estudio: Estadísticas"
@@ -170,29 +171,9 @@ with st.sidebar:
     
     opciones_menu = [MENU_ESTADISTICAS, MENU_CYGNUS, MENU_SIMULADOR, MENU_AFIP, MENU_CLIENTES, MENU_FACTURAS, MENU_INDICES]
     seleccion_pantalla = st.radio("Ir a:", opciones_menu, label_visibility="collapsed")
-    st.divider()
-    
-    st.header("🔔 Alertas")
-    if df_clientes is not None:
-        cv = df_clientes[df_clientes['Alerta_Revisión'] == 'VENCIDO']
-        if not cv.empty:
-            st.metric("Honorarios", f"⚠️ {len(cv)}", help="👉 Ve a 'Ajustes de Honorarios' para ver los clientes y aplicar aumentos.")
-        else:
-            st.metric("Honorarios", "✅ Al día")
-
-    def format_afip_alert(nivel, cat, margen, prom):
-        if nivel == 3: return "🔴 Pasado", f"Superaste Categoría {cat} por $ {abs(margen):,.2f}"
-        elif nivel == 2: return "🟡 Alerta", f"Margen: $ {margen:,.2f}.\nTu promedio ($ {prom:,.2f}) te hará saltar de la Cat {cat}."
-        else: return "🟢 Bien", f"Margen seguro: $ {margen:,.2f} en Cat {cat}."
-
-    estado_txt_ag, help_ag = format_afip_alert(nivel_ag, st.session_state['cat_agustin'], margen_ag, prom_ag)
-    estado_txt_la, help_la = format_afip_alert(nivel_la, st.session_state['cat_laura'], margen_la, prom_la)
-    
-    col_a, col_b = st.columns(2)
-    col_a.metric(f"AFIP Agus ({st.session_state['cat_agustin']})", estado_txt_ag, help=help_ag)
-    col_b.metric(f"AFIP Lau ({st.session_state['cat_laura']})", estado_txt_la, help=help_la)
     
     st.divider()
+    
     st.header("⏳ Filtro Temporal")
     meses_disponibles = sorted(df_historial_base['Mes_Indice'].dropna().unique())
     if meses_disponibles:
@@ -203,7 +184,8 @@ with st.sidebar:
     else:
         fecha_ini, fecha_fin = None, None
 
-    if st.button("🔄 Refrescar archivo", use_container_width=True):
+    st.divider()
+    if st.button("🔄 Refrescar datos", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
@@ -215,7 +197,6 @@ else:
     df_motor_filtrado = df_motor_interno.copy()
     df_hist_filtrado = df_historial_base.copy()
 
-# Filtro estricto para diferenciar unidades de negocio
 filtro_cygnus = (df_motor_filtrado['Emisor'] == CUIT_LAURA) & (df_motor_filtrado['Punto de Venta'] == '2')
 
 if seleccion_pantalla == MENU_ESTADISTICAS:
