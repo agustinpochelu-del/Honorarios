@@ -50,15 +50,20 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_indices = df_indices.loc[:, ~df_indices.columns.str.contains('^Unnamed')]
     df_indices = df_indices[['MES', 'IPC  IPIM']]
     
-    # --- CORRECCIÓN LECTURA CUIT Y PUNTO DE VENTA ---
+   # --- CORRECCIÓN LECTURA CUIT Y PUNTO DE VENTA ---
     if 'Emisor' in df_facturas.columns:
-        # Forzamos conversión a string, eliminamos ".0" si pandas lo leyó como float y limpiamos espacios
-        df_facturas['Emisor'] = df_facturas['Emisor'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+        # 1. Convertimos todo a texto
+        df_facturas['Emisor'] = df_facturas['Emisor'].astype(str)
+        # 2. Eliminamos CUALQUIER cosa que no sea un número (letras 'nan' de celdas vacías, puntos, guiones)
+        df_facturas['Emisor'] = df_facturas['Emisor'].str.replace(r'\D', '', regex=True)
+        # 3. Si la celda estaba vacía y quedó en blanco, le asignamos tu CUIT por defecto
+        df_facturas.loc[df_facturas['Emisor'] == '', 'Emisor'] = CUIT_AGUSTIN
     else:
         df_facturas['Emisor'] = CUIT_AGUSTIN 
         
     if 'Punto de Venta' in df_facturas.columns:
-        df_facturas['Punto de Venta'] = df_facturas['Punto de Venta'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+        # Hacemos la misma limpieza extrema para el punto de venta
+        df_facturas['Punto de Venta'] = df_facturas['Punto de Venta'].astype(str).str.replace(r'\D', '', regex=True)
         
     df_indices['IPC  IPIM'] = pd.to_numeric(df_indices['IPC  IPIM'].astype(str).str.replace(',', '.'), errors='coerce')
     df_facturas['Facturacion $'] = pd.to_numeric(df_facturas['Facturacion $'].astype(str).str.replace(',', '.'), errors='coerce')
