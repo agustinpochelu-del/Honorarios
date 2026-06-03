@@ -37,6 +37,13 @@ def cargar_y_procesar_datos(origen, es_nube):
     df_clientes.columns = df_clientes.columns.str.strip()
     df_indices.columns = df_indices.columns.str.strip()
     
+    # --- LIMPIEZA DE COLUMNAS COMENTADAS O VACÍAS EN ÍNDICES ---
+    # Eliminamos cualquier columna que empiece con 'Unnamed' o que esté vacía
+    df_indices = df_indices.loc[:, ~df_indices.columns.str.contains('^Unnamed')]
+    # Nos aseguramos de mantener estrictamente las columnas esenciales por si acaso
+    columnas_indices_validas = ['MES', 'IPC  IPIM']
+    df_indices = df_indices[[col for col in columnas_indices_validas if col in df_indices.columns]]
+    
     # Forzamos a que las columnas de valores sean numéricas
     df_indices['IPC  IPIM'] = pd.to_numeric(df_indices['IPC  IPIM'].astype(str).str.replace(',', '.'), errors='coerce')
     df_facturas['Facturacion $'] = pd.to_numeric(df_facturas['Facturacion $'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -65,11 +72,7 @@ def cargar_y_procesar_datos(origen, es_nube):
     )
     
     # --- AJUSTE DE COEFICIENTE DE RESGUARDO ---
-    # Calculamos el coeficiente nominal
     df_res['Coeficiente'] = ultimo_indice / df_res['IPC  IPIM']
-    
-    # REGLA CONTABLE: Si el período de la factura es igual o posterior al último índice disponible
-    # (o si no encuentra el índice en la tabla), forzamos a que el coeficiente sea 1.
     df_res['Coeficiente'] = df_res['Coeficiente'].fillna(1.0)
     
     # Multiplicamos la facturación original por el coeficiente definitivo
