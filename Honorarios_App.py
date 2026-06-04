@@ -11,7 +11,7 @@ st.title("📊 Panel de Control de Facturación y Honorarios")
 
 ARCHIVO_LOCAL = "Honosrario NM.xlsx"
 
-# Nombres Identificadores a prueba de balas (sin tildes y en mayúsculas)
+# Nombres Identificadores directos (esperados de la columna 'Nombre Emisor')
 EMISOR_AGUSTIN = "AGUSTIN"
 EMISOR_LAURA = "LAURA"
 
@@ -34,7 +34,6 @@ def formato_abreviado(valor):
     else:
         return f"$ {valor:.2f}"
 
-# Función sin caché para que lea SIEMPRE la versión más nueva del Excel
 def cargar_y_procesar_datos(ruta_archivo):
     if not os.path.exists(ruta_archivo):
         return None, None, None, None, None, None, None, None, None
@@ -50,18 +49,18 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_indices = df_indices.loc[:, ~df_indices.columns.str.contains('^Unnamed')]
     df_indices = df_indices[['MES', 'IPC  IPIM']]
     
-    # --- NUEVA LECTURA BLINDADA POR NOMBRE DE EMISOR ---
+    # --- LECTURA DIRECTA DE TU COLUMNA 'Nombre Emisor' ---
     if 'Nombre Emisor' in df_facturas.columns:
-        # Forzamos texto, quitamos espacios, pasamos a mayúsculas y volamos la tilde de Agustín
+        # Pasamos a mayúsculas y sacamos tildes/espacios para que coincida perfecto con EMISOR_AGUSTIN y EMISOR_LAURA
         df_facturas['Nombre Emisor'] = df_facturas['Nombre Emisor'].astype(str).str.strip().str.upper()
-        df_facturas['Nombre Emisor'] = df_facturas['Nombre Emisor'].str.replace('Í', 'I').str.replace('í', 'i')
-        # Si quedó vacío o dice 'nan', lo asignamos al estudio (Agustín) por defecto
+        df_facturas['Nombre Emisor'] = df_facturas['Nombre Emisor'].str.replace('Í', 'I')
+        # Si quedó vacío, lo asignamos por defecto
         df_facturas.loc[df_facturas['Nombre Emisor'].isin(['NAN', '', 'NONE', 'NULL']), 'Nombre Emisor'] = EMISOR_AGUSTIN
     else:
         df_facturas['Nombre Emisor'] = EMISOR_AGUSTIN 
         
     if 'Punto de Venta' in df_facturas.columns:
-        df_facturas['Punto de Venta'] = df_facturas['Punto de Venta'].astype(str).str.replace(r'\D', '', regex=True)
+        df_facturas['Punto de Venta'] = df_facturas['Punto de Venta'].astype(str).str.replace(r'\.0$', '', regex=True).str.replace(r'\D', '', regex=True)
         
     df_indices['IPC  IPIM'] = pd.to_numeric(df_indices['IPC  IPIM'].astype(str).str.replace(',', '.'), errors='coerce')
     df_facturas['Facturacion $'] = pd.to_numeric(df_facturas['Facturacion $'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -188,12 +187,8 @@ with st.sidebar:
         fecha_ini, fecha_fin = None, None
 
     st.divider()
-    # Carga manual por las dudas, pero como no hay caché, la app se refresca sola al tocar el menú
-    archivo_subido = st.file_uploader("Actualizar Excel maestro", type=["xlsx"], label_visibility="collapsed")
-    if archivo_subido is not None:
-        with open(ARCHIVO_LOCAL, "wb") as f:
-            f.write(archivo_subido.getbuffer())
-        st.success("¡Archivo maestro actualizado!")
+    if st.button("🔄 Refrescar datos", use_container_width=True):
+        st.cache_data.clear()
         st.rerun()
 
 # --- APLICACIÓN DE FILTROS ---
@@ -204,7 +199,7 @@ else:
     df_motor_filtrado = df_motor_interno.copy()
     df_hist_filtrado = df_historial_base.copy()
 
-# Filtro estricto para diferenciar unidades de negocio basado en la nueva columna de Nombre
+# Filtro estricto para diferenciar unidades de negocio basado en tu columna de Nombre
 filtro_cygnus = (df_motor_filtrado['Nombre Emisor'] == EMISOR_LAURA) & (df_motor_filtrado['Punto de Venta'] == '2')
 
 if seleccion_pantalla == MENU_ESTADISTICAS:
@@ -303,6 +298,7 @@ elif seleccion_pantalla == MENU_SIMULADOR:
                 df_facturas_orig.to_excel(w, sheet_name='Facturas', index=False)
                 df_indices_orig.to_excel(w, sheet_name='Indices', index=False)
             st.success(f"¡{cambios} actualizados!")
+            st.cache_data.clear()
             st.rerun()
 
 elif seleccion_pantalla == MENU_AFIP:
