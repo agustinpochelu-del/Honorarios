@@ -11,9 +11,9 @@ st.title("📊 Panel de Control de Facturación y Honorarios")
 
 ARCHIVO_LOCAL = "Honosrario NM.xlsx"
 
-# Nombres Identificadores (según nueva columna del Excel)
-EMISOR_AGUSTIN = "Agustín"
-EMISOR_LAURA = "Laura"
+# Nombres Identificadores a prueba de balas (sin tildes y en mayúsculas)
+EMISOR_AGUSTIN = "AGUSTIN"
+EMISOR_LAURA = "LAURA"
 
 if 'cat_agustin' not in st.session_state:
     st.session_state['cat_agustin'] = 'D'
@@ -34,7 +34,7 @@ def formato_abreviado(valor):
     else:
         return f"$ {valor:.2f}"
 
-@st.cache_data(ttl=300)
+# Función sin caché para que lea SIEMPRE la versión más nueva del Excel
 def cargar_y_procesar_datos(ruta_archivo):
     if not os.path.exists(ruta_archivo):
         return None, None, None, None, None, None, None, None, None
@@ -50,12 +50,13 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_indices = df_indices.loc[:, ~df_indices.columns.str.contains('^Unnamed')]
     df_indices = df_indices[['MES', 'IPC  IPIM']]
     
-    # --- NUEVA LECTURA POR NOMBRE DE EMISOR ---
+    # --- NUEVA LECTURA BLINDADA POR NOMBRE DE EMISOR ---
     if 'Nombre Emisor' in df_facturas.columns:
-        # Forzamos texto y limpiamos espacios en blanco accidentales
-        df_facturas['Nombre Emisor'] = df_facturas['Nombre Emisor'].astype(str).str.strip()
-        # Si quedó vacío o dice 'nan', lo asignamos al estudio por defecto
-        df_facturas.loc[df_facturas['Nombre Emisor'].isin(['nan', '', 'None']), 'Nombre Emisor'] = EMISOR_AGUSTIN
+        # Forzamos texto, quitamos espacios, pasamos a mayúsculas y volamos la tilde de Agustín
+        df_facturas['Nombre Emisor'] = df_facturas['Nombre Emisor'].astype(str).str.strip().str.upper()
+        df_facturas['Nombre Emisor'] = df_facturas['Nombre Emisor'].str.replace('Í', 'I').str.replace('í', 'i')
+        # Si quedó vacío o dice 'nan', lo asignamos al estudio (Agustín) por defecto
+        df_facturas.loc[df_facturas['Nombre Emisor'].isin(['NAN', '', 'NONE', 'NULL']), 'Nombre Emisor'] = EMISOR_AGUSTIN
     else:
         df_facturas['Nombre Emisor'] = EMISOR_AGUSTIN 
         
@@ -81,7 +82,6 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_res['Facturacion $ Actualizada'] = df_res['Facturacion $'] * df_res['Coeficiente']
     
     df_final = pd.merge(df_res, df_clientes, on='Nro. Doc. Receptor', how='left')
-    # Actualizamos las columnas a mostrar en el historial
     columnas_hist = ['Fecha_dt', 'Mes_Indice', 'Nombre Emisor', 'Tipo', 'Punto de Venta', 'Número Desde', 'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada']
     df_historial_visual = df_final[[c for c in columnas_hist if c in df_final.columns]].copy()
     
@@ -188,8 +188,12 @@ with st.sidebar:
         fecha_ini, fecha_fin = None, None
 
     st.divider()
-    if st.button("🔄 Refrescar datos", use_container_width=True):
-        st.cache_data.clear()
+    # Carga manual por las dudas, pero como no hay caché, la app se refresca sola al tocar el menú
+    archivo_subido = st.file_uploader("Actualizar Excel maestro", type=["xlsx"], label_visibility="collapsed")
+    if archivo_subido is not None:
+        with open(ARCHIVO_LOCAL, "wb") as f:
+            f.write(archivo_subido.getbuffer())
+        st.success("¡Archivo maestro actualizado!")
         st.rerun()
 
 # --- APLICACIÓN DE FILTROS ---
@@ -200,7 +204,7 @@ else:
     df_motor_filtrado = df_motor_interno.copy()
     df_hist_filtrado = df_historial_base.copy()
 
-# Filtro estricto para diferenciar unidades de negocio basado en la nueva columna
+# Filtro estricto para diferenciar unidades de negocio basado en la nueva columna de Nombre
 filtro_cygnus = (df_motor_filtrado['Nombre Emisor'] == EMISOR_LAURA) & (df_motor_filtrado['Punto de Venta'] == '2')
 
 if seleccion_pantalla == MENU_ESTADISTICAS:
@@ -299,7 +303,6 @@ elif seleccion_pantalla == MENU_SIMULADOR:
                 df_facturas_orig.to_excel(w, sheet_name='Facturas', index=False)
                 df_indices_orig.to_excel(w, sheet_name='Indices', index=False)
             st.success(f"¡{cambios} actualizados!")
-            st.cache_data.clear()
             st.rerun()
 
 elif seleccion_pantalla == MENU_AFIP:
