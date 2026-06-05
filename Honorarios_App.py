@@ -29,7 +29,7 @@ def formato_abreviado(valor):
     else:
         return f"$ {valor:.2f}"
 
-# ELIMINAMOS EL CACHÉ: AHORA LEE TU EXCEL EN VIVO SIEMPRE
+@st.cache_data(ttl=300)
 def cargar_y_procesar_datos(ruta_archivo):
     if not os.path.exists(ruta_archivo):
         return None, None, None, None, None, None, None, None, None
@@ -38,24 +38,20 @@ def cargar_y_procesar_datos(ruta_archivo):
     df_clientes = pd.read_excel(ruta_archivo, sheet_name="Clientes")
     df_indices = pd.read_excel(ruta_archivo, sheet_name="Indices")
     
-    df_facturas.columns = df_facturas.columns.str.strip()
-    df_clientes.columns = df_clientes.columns.str.strip()
-    df_indices.columns = df_indices.columns.str.strip()
+    # --- LIMPIEZA ABSOLUTA DE ENCABEZADOS ---
+    # Esto elimina caracteres fantasmas y espacios en todas las tablas sin renombrar a la fuerza
+    df_facturas.columns = [str(c).replace('\ufeff', '').strip() for c in df_facturas.columns]
+    df_clientes.columns = [str(c).replace('\ufeff', '').strip() for c in df_clientes.columns]
+    df_indices.columns = [str(c).replace('\ufeff', '').strip() for c in df_indices.columns]
+    
+    # Eliminamos columnas repetidas si el Excel dejó alguna basura
+    df_facturas = df_facturas.loc[:, ~df_facturas.columns.duplicated()]
+    df_clientes = df_clientes.loc[:, ~df_clientes.columns.duplicated()]
+    df_indices = df_indices.loc[:, ~df_indices.columns.duplicated()]
     
     df_indices = df_indices.loc[:, ~df_indices.columns.str.contains('^Unnamed')]
-    df_indices = df_indices[['MES', 'IPC  IPIM']]
-    
-    # --- LECTURA DIRECTA DE TUS COLUMNAS (Sin adivinanzas) ---
-    if 'Emisor' in df_facturas.columns:
-        df_facturas['Emisor'] = df_facturas['Emisor'].astype(str).str.strip()
-    else:
-        df_facturas['Emisor'] = 'Agustín'
-
-    if 'Negocio' in df_facturas.columns:
-        df_facturas['Negocio'] = df_facturas['Negocio'].astype(str).str.strip()
-    else:
-        df_facturas['Negocio'] = 'Estudio'
-    # ---------------------------------------------------------
+    columnas_indices_validas = ['MES', 'IPC  IPIM']
+    df_indices = df_indices[[col for col in columnas_indices_validas if col in df_indices.columns]]
     
     df_indices['IPC  IPIM'] = pd.to_numeric(df_indices['IPC  IPIM'].astype(str).str.replace(',', '.'), errors='coerce')
     df_facturas['Facturacion $'] = pd.to_numeric(df_facturas['Facturacion $'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -77,12 +73,14 @@ def cargar_y_procesar_datos(ruta_archivo):
     
     df_final = pd.merge(df_res, df_clientes, on='Nro. Doc. Receptor', how='left')
     
+    # Tabla Historial Visual
     cols_hist = ['Fecha_dt', 'Mes_Indice', 'Emisor', 'Negocio', 'Tipo', 'Punto de Venta', 'Número Desde', 'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada']
     df_historial_visual = df_final[[col for col in cols_hist if col in df_final.columns]].copy()
     
     df_clientes_proc = df_clientes.copy()
     df_clientes_proc['Actualizacion_dt'] = pd.to_datetime(df_clientes_proc['Actualizacion'], errors='coerce')
     df_clientes_proc['periodos'] = pd.to_numeric(df_clientes_proc['periodos'], errors='coerce').fillna(0).astype(int)
+    
     df_clientes_proc['Mes_Actualizacion_dt'] = df_clientes_proc['Actualizacion_dt'].dt.to_period('M').dt.to_timestamp()
     df_clientes_proc = pd.merge(
         df_clientes_proc, df_indices[['MES_dt', 'IPC  IPIM']], left_on='Mes_Actualizacion_dt', right_on='MES_dt', how='left'
@@ -90,7 +88,8 @@ def cargar_y_procesar_datos(ruta_archivo):
     
     hoy = datetime.now()
     def calcular_metricas_comerciales(row):
-        if pd.isna(row['Actualizacion_dt']): return pd.Series([0, "OK", row['precio']])
+        if pd.isna(row['Actualizacion_dt']):
+            return pd.Series([0, "OK", row['precio']])
         meses_antigüedad = (hoy.year - row['Actualizacion_dt'].year) * 12 + (hoy.month - row['Actualizacion_dt'].month)
         if pd.notna(row['IPC_Ult_Actualizacion']) and row['IPC_Ult_Actualizacion'] > 0:
             coef_inflacion = ultimo_indice / row['IPC_Ult_Actualizacion']
@@ -114,16 +113,18 @@ def cargar_y_procesar_datos(ruta_archivo):
 
 def colorear_clientes(row):
     estilos = [''] * len(row)
-    if row['Estado'] == 'Inactivo': return ['background-color: #fee2e2; color: #991b1b; opacity: 0.7;'] * len(row)
+    if row['Estado'] == 'Inactivo':
+        return ['background-color: #fee2e2; color: #991b1b; opacity: 0.7;'] * len(row)
     if row['Alerta_Revisión'] == 'VENCIDO':
         idx_alerta = row.index.get_loc('Alerta_Revisión')
         estilos[idx_alerta] = 'background-color: #fef08a; color: #854d0e; font-weight: bold;'
     return estilos
 
+# --- BLOQUE PRINCIPAL DE EJECUCIÓN ---
 df_historial_base, df_clientes, df_indices_vis, ult_mes, ult_ind, df_clientes_orig, df_facturas_orig, df_indices_orig, df_motor_interno = cargar_y_procesar_datos(ARCHIVO_LOCAL)
 
 if df_historial_base is None:
-    st.error(f"⚠️ No se encontró '{ARCHIVO_LOCAL}'. Subí el archivo desde la barra lateral.")
+    st.error(f"⚠️ No se encontró el archivo '{ARCHIVO_LOCAL}'. Asegurate de guardarlo en la carpeta del sistema.")
     st.stop()
 
 # --- PRE-CÁLCULO DE SEMÁFOROS ---
@@ -137,10 +138,10 @@ if df_historial_base is not None:
     fecha_12m = fecha_max - pd.DateOffset(years=1)
     fecha_3m = fecha_max - pd.DateOffset(months=3)
     
-    def nivel_alerta_afip(emisor, cat_actual):
-        df_e = df_motor_interno[df_motor_interno['Emisor'] == emisor]
-        fact_12m = df_e[(df_e['Fecha_dt'] > fecha_12m) & (df_e['Fecha_dt'] <= fecha_max)]['Facturacion $'].sum()
-        fact_3m = df_e[(df_e['Fecha_dt'] > fecha_3m) & (df_e['Fecha_dt'] <= fecha_max)]['Facturacion $'].sum()
+    def nivel_alerta_afip(nombre_emisor, cat_actual):
+        df_emisor = df_motor_interno[df_motor_interno['Emisor'] == nombre_emisor]
+        fact_12m = df_emisor[(df_emisor['Fecha_dt'] > fecha_12m) & (df_emisor['Fecha_dt'] <= fecha_max)]['Facturacion $'].sum()
+        fact_3m = df_emisor[(df_emisor['Fecha_dt'] > fecha_3m) & (df_emisor['Fecha_dt'] <= fecha_max)]['Facturacion $'].sum()
         promedio = fact_3m / 3 if fact_3m > 0 else fact_12m / 12
 
         margen = ESCALAS_MONOTRIBUTO[cat_actual] - fact_12m
@@ -155,28 +156,24 @@ if df_historial_base is not None:
     if max_alerta == 3: estado_afip = "🔴"
     elif max_alerta == 2: estado_afip = "🟡"
 
-# --- MENÚ LATERAL ---
+# --- MENÚ LATERAL DE NAVEGACIÓN ---
 with st.sidebar:
     st.header("Navegación del Sistema")
     MENU_ESTADISTICAS = "📈 Estudio: Estadísticas"
     MENU_CYGNUS = "🏠 Cygnus Home: KPIs"
-    MENU_SIMULADOR = f"{estado_honorarios} Actualización de Honorarios"
+    MENU_CLIENTES_ANALISIS = f"{estado_honorarios} Análisis de Clientes"
     MENU_AFIP = f"{estado_afip} Control Monotributo"
-    MENU_CLIENTES = "👥 Maestro de Clientes"
     MENU_FACTURAS = "🧾 Historial de Facturas"
     MENU_INDICES = "📊 Tabla de Índices"
     
-    opciones_menu = [MENU_ESTADISTICAS, MENU_CYGNUS, MENU_SIMULADOR, MENU_AFIP, MENU_CLIENTES, MENU_FACTURAS, MENU_INDICES]
+    opciones_menu = [MENU_ESTADISTICAS, MENU_CYGNUS, MENU_CLIENTES_ANALISIS, MENU_AFIP, MENU_FACTURAS, MENU_INDICES]
     seleccion_pantalla = st.radio("Ir a sección:", opciones_menu, label_visibility="collapsed")
     
     st.divider()
     
-    # Subida de archivo directa en la barra para forzar el redibujado de la web
-    archivo_subido = st.file_uploader("Actualizar Excel Maestro", type=["xlsx"])
-    if archivo_subido is not None:
-        with open(ARCHIVO_LOCAL, "wb") as f:
-            f.write(archivo_subido.getbuffer())
-        st.success("¡Archivo cargado y procesado!")
+    # Botón de refresco (Al pulsarlo, borra el caché y lee el archivo del disco en el acto)
+    if st.button("🔄 Refrescar datos del archivo", use_container_width=True):
+        st.cache_data.clear()
         st.rerun()
 
     st.divider()
@@ -184,8 +181,8 @@ with st.sidebar:
     st.header("⏳ Filtro Temporal")
     meses_disponibles = sorted(df_historial_base['Mes_Indice'].dropna().unique())
     if meses_disponibles:
-        ops = [m.strftime('%m/%Y') for m in meses_disponibles]
-        rango_seleccionado = st.select_slider("Rango de análisis:", options=ops, value=(ops[0], ops[-1]), label_visibility="collapsed")
+        opciones_fechas = [m.strftime('%m/%Y') for m in meses_disponibles]
+        rango_seleccionado = st.select_slider("Rango de análisis:", options=opciones_fechas, value=(opciones_fechas[0], opciones_fechas[-1]), label_visibility="collapsed")
         fecha_inicio_filtro = pd.to_datetime(rango_seleccionado[0], format='%m/%Y')
         fecha_fin_filtro = pd.to_datetime(rango_seleccionado[1], format='%m/%Y')
     else:
@@ -200,10 +197,11 @@ else:
     df_historial_filtrado = df_historial_base.copy()
 
 # --- RENDERIZADO DE PANTALLAS ---
+
 if seleccion_pantalla == MENU_ESTADISTICAS:
     st.subheader("📊 Estudio Contable: Análisis Evolutivo Real")
+    st.caption("Esta vista procesa exclusivamente las facturas de 'Estudio'.")
     
-    # Filtro: Todo lo que diga Estudio en tu columna
     df_estudio_filtrado = df_motor_filtrado[df_motor_filtrado['Negocio'] == 'Estudio']
     df_estudio_interno = df_motor_interno[df_motor_interno['Negocio'] == 'Estudio']
     
@@ -242,25 +240,24 @@ if seleccion_pantalla == MENU_ESTADISTICAS:
 elif seleccion_pantalla == MENU_CYGNUS:
     st.subheader("🏠 Cygnus Home: Rendimiento Comercial")
     
-    # Filtro: Todo lo que diga Cygnus Home en tu columna
     df_cygnus_filtrado = df_motor_filtrado[df_motor_filtrado['Negocio'] == 'Cygnus Home']
     df_cygnus_interno = df_motor_interno[df_motor_interno['Negocio'] == 'Cygnus Home']
     
     if df_cygnus_interno.empty:
         st.info("Aún no hay facturas registradas en la base de datos para Cygnus Home.")
     else:
-        fecha_max = df_cygnus_interno['Mes_Indice'].max()
-        f_12m = fecha_max - pd.DateOffset(months=11)
-        f_6m = fecha_max - pd.DateOffset(months=5)
+        mes_curso = df_cygnus_interno['Mes_Indice'].max()
+        mes_anterior = mes_curso - pd.DateOffset(months=1)
+        f_12m = mes_curso - pd.DateOffset(months=11)
         
-        fact_ult_mes = df_cygnus_interno[df_cygnus_interno['Mes_Indice'] == fecha_max]['Facturacion $ Actualizada'].sum()
-        fact_ult_6m = df_cygnus_interno[df_cygnus_interno['Mes_Indice'] >= f_6m]['Facturacion $ Actualizada'].sum()
+        fact_mes_curso = df_cygnus_interno[df_cygnus_interno['Mes_Indice'] == mes_curso]['Facturacion $ Actualizada'].sum()
+        fact_mes_anterior = df_cygnus_interno[df_cygnus_interno['Mes_Indice'] == mes_anterior]['Facturacion $ Actualizada'].sum()
         fact_ult_12m = df_cygnus_interno[df_cygnus_interno['Mes_Indice'] >= f_12m]['Facturacion $ Actualizada'].sum()
         
         col1, col2, col3 = st.columns(3)
-        col1.metric("Último Mes", f"$ {fact_ult_mes:,.2f}")
-        col2.metric("Últimos 6 Meses", formato_abreviado(fact_ult_6m))
-        col3.metric("Últimos 12 Meses", formato_abreviado(fact_ult_12m))
+        col1.metric(f"Mes en Curso ({mes_curso.strftime('%m/%Y')})", f"$ {fact_mes_curso:,.2f}")
+        col2.metric(f"Mes Anterior ({mes_anterior.strftime('%m/%Y')})", f"$ {fact_mes_anterior:,.2f}")
+        col3.metric("Últimos 12 Meses (Real)", formato_abreviado(fact_ult_12m))
         
         st.divider()
         if not df_cygnus_filtrado.empty:
@@ -271,18 +268,20 @@ elif seleccion_pantalla == MENU_CYGNUS:
             fig_cy.update_traces(hovertemplate="%{y:$,.2f}")
             st.plotly_chart(fig_cy, use_container_width=True)
 
-elif seleccion_pantalla == MENU_SIMULADOR:
-    st.subheader("🛠️ Entorno Interactivo de Actualización de Abonos")
+elif seleccion_pantalla == MENU_CLIENTES_ANALISIS:
+    st.subheader("👥 Análisis de Clientes y Ajustes")
     
     clientes_vencidos = df_clientes[df_clientes['Alerta_Revisión'] == 'VENCIDO']
     if not clientes_vencidos.empty:
-        st.error(f"⚠️ Atención: Hay **{len(clientes_vencidos)}** clientes con honorarios atrasados.")
+        st.error(f"⚠️ **Atención:** Hay **{len(clientes_vencidos)}** honorarios sugeridos para actualización.")
     else:
-        st.success("✅ Todos los clientes están con sus honorarios al día.")
+        st.success("✅ Todos los clientes activos están con sus honorarios al día.")
     
+    st.write("#### 🛠️ Ajuste Rápido de Honorarios")
     df_simulacion = df_clientes[df_clientes['Estado'] == 'Activo'].copy()
     df_simulacion['Nuevo Precio Pactado'] = df_simulacion['precio']
     columnas_sim = ['Nro. Doc. Receptor', 'Denominación Receptor', 'precio', 'Meses Desactualizado', 'Honorario Sugerido', 'Nuevo Precio Pactado']
+    
     df_editado = st.data_editor(
         df_simulacion[columnas_sim], use_container_width=True,
         disabled=['Nro. Doc. Receptor', 'Denominación Receptor', 'precio', 'Meses Desactualizado', 'Honorario Sugerido'],
@@ -292,6 +291,7 @@ elif seleccion_pantalla == MENU_SIMULADOR:
             "Nuevo Precio Pactado": st.column_config.NumberColumn("Nuevo Precio Pactado ✏️", format="$ %.2f")
         }, key="editor_abonos"
     )
+    
     if st.button("💾 Guardar y Actualizar Base de Datos", type="primary"):
         df_maestro_nuevo = df_clientes_orig.copy()
         cambios_realizados = 0
@@ -307,18 +307,33 @@ elif seleccion_pantalla == MENU_SIMULADOR:
                 df_maestro_nuevo.to_excel(writer, sheet_name='Clientes', index=False)
                 df_facturas_orig.to_excel(writer, sheet_name='Facturas', index=False)
                 df_indices_orig.to_excel(writer, sheet_name='Indices', index=False)
-            st.success(f"¡Se actualizaron con éxito {cambios_realizados} clientes! Refrescando sistema...")
+            st.success(f"¡Se actualizaron con éxito {cambios_realizados} clientes! Refrescando...")
+            st.cache_data.clear()
             st.rerun()
+
+    st.divider()
+    st.write("#### 📌 Vista General Maestra")
+    df_clientes_vista = df_clientes.copy()
+    df_clientes_vista['Actualizacion'] = df_clientes_vista['Actualizacion_Str']
+    columnas_maestro_vis = ['Nro. Doc. Receptor', 'Denominación Receptor', 'Formalidad', 'Periodicidad', 'precio', 'Estado', 'Actualiza', 'Actualizacion', 'periodos', 'Meses Desactualizado', 'Alerta_Revisión']
+    df_estilado = df_clientes_vista[columnas_maestro_vis].style.apply(colorear_clientes, axis=1)
+    st.dataframe(df_estilado, use_container_width=True, column_config={"precio": st.column_config.NumberColumn("Precio Unitario", format="$ %.2f")})
 
 elif seleccion_pantalla == MENU_AFIP:
     st.subheader("🏛️ Panel de Recategorización e Inscripción Activa")
     
-    def renderizar_afip(emisor, cat_actual, col):
+    mes_actual = datetime.now().month
+    if mes_actual in [6, 12]:
+        st.warning("⚠️ **Recordatorio de Agenda:** El mes que viene inicia el período de recategorización obligatoria de AFIP.")
+    elif mes_actual in [1, 7]:
+        st.error("🚨 **Período de Recategorización Activo:** Tenés tiempo hasta el día 20 de este mes para confirmar tu categoría en la web de AFIP.")
+        
+    def renderizar_afip(nombre_emisor, cat_actual, col):
         with col:
-            st.write(f"### 👤 {emisor}")
-            df_emisor = df_motor_interno[df_motor_interno['Emisor'] == emisor]
+            st.write(f"### 👤 {nombre_emisor}")
+            df_emisor = df_motor_interno[df_motor_interno['Emisor'] == nombre_emisor]
             if df_emisor.empty:
-                st.info(f"Sin facturación registrada para {emisor}.")
+                st.info(f"Sin facturación registrada para {nombre_emisor}.")
             else:
                 fecha_max_factura = df_motor_interno['Fecha_dt'].max()
                 fecha_12m = fecha_max_factura - pd.DateOffset(years=1)
@@ -337,44 +352,41 @@ elif seleccion_pantalla == MENU_AFIP:
     renderizar_afip('Laura', st.session_state['cat_laura'], col_der)
         
     st.divider()
-    st.write("### 🛠️ Asistente de Sincronización")
-    hizo_tramite = st.checkbox("¿Ya realizaste la recategorización en la web de AFIP?")
-    if hizo_tramite:
-        nueva_cat_agustin = st.selectbox("Nueva Categoría Agustín:", options=list(ESCALAS_MONOTRIBUTO.keys()), index=list(ESCALAS_MONOTRIBUTO.keys()).index(st.session_state['cat_agustin']))
-        nueva_cat_laura = st.selectbox("Nueva Categoría Laura:", options=list(ESCALAS_MONOTRIBUTO.keys()), index=list(ESCALAS_MONOTRIBUTO.keys()).index(st.session_state['cat_laura']))
-        if st.button("✅ Confirmar y Aplicar"):
-            st.session_state['cat_agustin'] = nueva_cat_agustin
-            st.session_state['cat_laura'] = nueva_cat_laura
-            st.success("¡Sincronizado! Los nuevos topes están activos.")
+    st.write("### 🛠️ Corrección de Categoría Actual")
+    
+    col_sel_ag, col_sel_la = st.columns(2)
+    with col_sel_ag:
+        cat_ag_sel = st.selectbox("Categoría Agustín:", options=list(ESCALAS_MONOTRIBUTO.keys()), index=list(ESCALAS_MONOTRIBUTO.keys()).index(st.session_state['cat_agustin']))
+        if cat_ag_sel != st.session_state['cat_agustin']:
+            st.session_state['cat_agustin'] = cat_ag_sel
+            st.rerun()
+    with col_sel_la:
+        cat_la_sel = st.selectbox("Categoría Laura:", options=list(ESCALAS_MONOTRIBUTO.keys()), index=list(ESCALAS_MONOTRIBUTO.keys()).index(st.session_state['cat_laura']))
+        if cat_la_sel != st.session_state['cat_laura']:
+            st.session_state['cat_laura'] = cat_la_sel
             st.rerun()
 
-elif seleccion_pantalla == MENU_CLIENTES:
-    st.subheader("👥 Maestro de Clientes Completo")
-    df_clientes_vista = df_clientes.copy()
-    df_clientes_vista['Actualizacion'] = df_clientes_vista['Actualizacion_Str']
-    columnas_maestro_vis = ['Nro. Doc. Receptor', 'Denominación Receptor', 'Formalidad', 'Periodicidad', 'precio', 'Estado', 'Actualiza', 'Actualizacion', 'periodos', 'Meses Desactualizado', 'Alerta_Revisión']
-    df_estilado = df_clientes_vista[columnas_maestro_vis].style.apply(colorear_clientes, axis=1)
-    st.dataframe(df_estilado, use_container_width=True, column_config={"precio": st.column_config.NumberColumn("Precio Unitario", format="$ %.2f")})
-    
 elif seleccion_pantalla == MENU_FACTURAS:
     st.subheader("🧾 Historial de Facturación")
     
-    # --- FILTRO DIRECTO DE NEGOCIO PARA VER LA DATA ---
     vista_facturas = st.radio("Filtrar visualización de facturas:", ["🏢 Estudio Contable", "🏠 Cygnus Home", "🌎 Mostrar Todas las Facturas"], horizontal=True)
     
     if vista_facturas == "🏢 Estudio Contable":
-        df_historial_render = df_historial_filtrado[df_historial_filtrado['Negocio'] == 'Estudio'].copy()
+        df_hist_render = df_historial_filtrado[df_historial_filtrado['Negocio'] == 'Estudio'].copy()
     elif vista_facturas == "🏠 Cygnus Home":
-        df_historial_render = df_historial_filtrado[df_historial_filtrado['Negocio'] == 'Cygnus Home'].copy()
+        df_hist_render = df_historial_filtrado[df_historial_filtrado['Negocio'] == 'Cygnus Home'].copy()
     else:
-        df_historial_render = df_historial_filtrado.copy()
+        df_hist_render = df_historial_filtrado.copy()
         
-    df_historial_render['Fecha'] = df_historial_render['Fecha_dt'].dt.strftime('%d/%m/%Y')
-    df_historial_render = df_historial_render.sort_values('Fecha_dt', ascending=False)
+    df_hist_render['Fecha'] = df_hist_render['Fecha_dt'].dt.strftime('%d/%m/%Y')
+    df_hist_render = df_hist_render.sort_values('Fecha_dt', ascending=False)
     
     columnas_tabla = ['Fecha', 'Emisor', 'Negocio', 'Tipo', 'Punto de Venta', 'Número Desde', 'Nro. Doc. Receptor', 'Denominación Receptor', 'Facturacion $', 'Facturacion $ Actualizada']
+    
+    columnas_existentes = [c for c in columnas_tabla if c in df_hist_render.columns]
+    
     st.dataframe(
-        df_historial_render[[c for c in columnas_tabla if c in df_historial_render.columns]], 
+        df_hist_render[columnas_existentes], 
         use_container_width=True, 
         column_config={
             "Facturacion $": st.column_config.NumberColumn("Original", format="$ %.2f"), 
